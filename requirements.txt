@@ -1,0 +1,35 @@
+# 6G PA GAN-DPD Requirements
+# ===========================
+# For 29th LSI Design Contest - Okinawa
+#
+# Install: pip install -r requirements.txt
+# Colab: Most packages pre-installed, just pip install pynq h5py
+
+# Core Deep Learning (pre-installed on Colab)
+torch>=2.0.0
+numpy>=1.24.0
+scipy>=1.10.0
+
+# Data Processing
+h5py>=3.8.0
+
+# Visualization (pre-installed on Colab)
+matplotlib>=3.7.0
+
+# Configuration
+pyyaml>=6.0
+
+# Training Utilities
+tqdm>=4.65.0
+
+# FPGA Deployment (install on PYNQ board, not Colab)
+# pynq>=3.0.0
+
+# Optional - uncomment as needed
+# tensorboard>=2.12.0
+# pandas>=2.0.0
+# onnxruntime>=1.15.0
+
+# Development (local only, not needed for Colab)
+# pytest>=7.3.0
+# black>=23.3.0

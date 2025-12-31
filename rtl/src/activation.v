@@ -63,7 +63,7 @@ module activation #(
     
     // Initialize LUT from file
     initial begin
-        $readmemh("tanh_lut_init.hex", tanh_lut);
+        $readmemh("tanh_lut.hex", tanh_lut);
     end
     
     // LUT address generation

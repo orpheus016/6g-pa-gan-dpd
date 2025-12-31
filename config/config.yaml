@@ -1,0 +1,253 @@
+# =============================================================================
+# 6G PA GAN-DPD Configuration
+# CWGAN-GP with QAT for Memory-Aware TDNN Generator
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# System Parameters
+# -----------------------------------------------------------------------------
+system:
+  sample_rate: 200e6           # 200 MHz sample rate (OpenDPD dataset)
+  target_rate: 400e6           # 400 MHz target for 6G (2× interpolation)
+  bandwidth: 4.8e9             # 6G carrier bandwidth (4.4-4.8 GHz)
+  
+# -----------------------------------------------------------------------------
+# PA Parameters (GaN Digital Twin)
+# -----------------------------------------------------------------------------
+pa:
+  type: "volterra"             # PA model type: volterra, saleh, rapp
+  memory_depth: 5              # Memory depth (taps)
+  nonlinear_order: 7           # Nonlinearity order
+  gain_db: 30                  # Small-signal gain (dB)
+  p1db_dbm: 40                 # 1dB compression point (dBm)
+  
+  # Temperature coefficients (thermal drift)
+  thermal:
+    cold:
+      temp_celsius: 0
+      gain_drift: -0.02        # -2% gain change
+      phase_drift: -5          # -5 degree phase change
+      am_am_coeff: 1.05        # AM-AM coefficient scaling
+    normal:
+      temp_celsius: 25
+      gain_drift: 0.0
+      phase_drift: 0
+      am_am_coeff: 1.0
+    hot:
+      temp_celsius: 70
+      gain_drift: -0.05        # -5% gain change
+      phase_drift: 10          # +10 degree phase change
+      am_am_coeff: 0.92        # AM-AM coefficient scaling
+      
+  # Noise parameters
+  noise:
+    floor_db: -60              # Noise floor (dB)
+    phase_noise_deg: 0.5       # Phase noise RMS (degrees)
+
+# -----------------------------------------------------------------------------
+# DPD Model Architecture (Memory-Aware TDNN)
+# -----------------------------------------------------------------------------
+model:
+  # Generator: Memory-Aware TDNN
+  generator:
+    type: "tdnn"               # Time-Delay Neural Network
+    memory_depth: 5            # Number of memory taps (M)
+    
+    # Input structure: [I(n), Q(n), |x(n)|, ..., |x(n-M)|, I(n-1), Q(n-1), ..., I(n-M), Q(n-M)]
+    # Total input dim = 2 + (M+1) + 2*M = 2 + 6 + 10 = 18 for M=5
+    input_dim: 18
+    
+    # Network architecture
+    hidden_dims: [32, 16]      # Hidden layer dimensions
+    output_dim: 2              # I_dpd, Q_dpd
+    
+    # Activation functions
+    hidden_activation: "leaky_relu"
+    leaky_slope: 0.2
+    output_activation: "tanh"
+    
+    # Regularization
+    dropout: 0.0               # No dropout for inference
+    batch_norm: false          # No BN for FPGA simplicity
+    
+  # Discriminator: MLP Critic (CWGAN-GP)
+  discriminator:
+    type: "mlp"
+    input_dim: 4               # [I_real, Q_real, I_cond, Q_cond]
+    hidden_dims: [64, 32, 16]
+    output_dim: 1              # Wasserstein score
+    
+    hidden_activation: "leaky_relu"
+    leaky_slope: 0.2
+    use_spectral_norm: true
+
+# -----------------------------------------------------------------------------
+# Quantization (QAT - Quantization-Aware Training)
+# -----------------------------------------------------------------------------
+quantization:
+  enabled: true
+  
+  # Weight quantization
+  weight:
+    bits: 16                   # Q1.15 format
+    signed: true
+    per_channel: true          # Per-channel scale factors
+    symmetric: true
+    
+  # Activation quantization  
+  activation:
+    bits: 16                   # Q8.8 format
+    signed: true
+    per_tensor: true
+    symmetric: false           # Asymmetric for ReLU
+    
+  # Accumulator
+  accumulator:
+    bits: 32                   # Q16.16 format
+    
+  # QAT schedule
+  qat:
+    start_epoch: 50            # Start QAT after initial training
+    warmup_epochs: 10          # Gradual quantization warmup
+    
+# -----------------------------------------------------------------------------
+# Training Configuration
+# -----------------------------------------------------------------------------
+training:
+  # Basic settings
+  batch_size: 256
+  epochs: 500
+  
+  # Optimizer
+  optimizer:
+    type: "adam"
+    lr_generator: 1e-4
+    lr_discriminator: 1e-4
+    betas: [0.0, 0.9]          # WGAN-GP betas
+    weight_decay: 1e-5
+    
+  # CWGAN-GP settings
+  n_critic: 5                  # Critic updates per generator update
+  gp_weight: 10.0              # Gradient penalty weight
+  
+  # Loss weights
+  loss:
+    adversarial: 1.0
+    reconstruction_l1: 50.0    # L1 reconstruction loss
+    spectral_evm: 20.0         # EVM spectral loss
+    spectral_acpr: 10.0        # ACPR spectral loss
+    
+  # Learning rate schedule
+  scheduler:
+    type: "cosine"
+    min_lr: 1e-6
+    warmup_epochs: 10
+    
+  # Checkpointing
+  checkpoint_interval: 25
+  save_best: true
+  best_metric: "evm"           # Save best based on EVM
+
+# -----------------------------------------------------------------------------
+# Data Configuration
+# -----------------------------------------------------------------------------
+data:
+  # OpenDPD APA dataset
+  dataset_path: "data/raw/"
+  processed_path: "data/processed/"
+  
+  # Data split
+  train_ratio: 0.8
+  val_ratio: 0.1
+  test_ratio: 0.1
+  
+  # Normalization
+  normalize: true
+  clip_range: [-1.0, 1.0]
+  
+  # Augmentation
+  augmentation:
+    enabled: true
+    noise_injection: true
+    noise_std: 0.01
+    
+# -----------------------------------------------------------------------------
+# A-SPSA Online Adaptation (FPGA parameters)
+# -----------------------------------------------------------------------------
+aspsa:
+  # Initial learning rate (Q0.16 format)
+  initial_lr: 0.01             # a0
+  initial_perturbation: 0.001  # c0
+  
+  # Annealing schedule
+  anneal_period: 1000          # Iterations per anneal step
+  anneal_shift: 1              # Bits to shift (divide by 2)
+  max_anneal_steps: 8          # Maximum anneal steps
+  
+  # Convergence
+  min_lr: 1e-6
+  convergence_threshold: 1e-4
+  
+  # LFSR for Bernoulli perturbation
+  lfsr_seed: 0xACE1
+  lfsr_taps: [15, 14, 12, 3]   # 16-bit LFSR taps
+
+# -----------------------------------------------------------------------------
+# FPGA Deployment
+# -----------------------------------------------------------------------------
+fpga:
+  target: "zcu104"             # Target board: pynq_z1, zcu104
+  
+  # Clock domains
+  nn_clock_mhz: 200            # NN inference clock
+  spsa_clock_mhz: 1            # A-SPSA update clock
+  dac_clock_mhz: 400           # Output DAC clock (2× interpolation)
+  
+  # Memory configuration
+  weight_banks: 3              # Cold/Normal/Hot weight banks
+  bram_depth: 2048             # BRAM depth per bank
+  
+  # CDC configuration
+  cdc_sync_stages: 2           # Number of synchronizer stages
+  shadow_buffer_depth: 512     # Shadow memory depth
+  
+  # Temperature thresholds
+  temp_cold_threshold: 15      # °C
+  temp_hot_threshold: 40       # °C
+
+# -----------------------------------------------------------------------------
+# Export Configuration
+# -----------------------------------------------------------------------------
+export:
+  output_dir: "export/"
+  
+  # Weight file format
+  format: "binary"             # binary, hex, coe
+  endianness: "little"
+  
+  # Files to generate
+  files:
+    - "weights_cold.bin"
+    - "weights_normal.bin"
+    - "weights_hot.bin"
+    - "bias_cold.bin"
+    - "bias_normal.bin"
+    - "bias_hot.bin"
+    - "tanh_lut.bin"
+    
+# -----------------------------------------------------------------------------
+# Logging & Visualization
+# -----------------------------------------------------------------------------
+logging:
+  level: "INFO"
+  tensorboard: true
+  wandb: false
+  log_interval: 100            # Log every N batches
+  
+visualization:
+  plot_interval: 50            # Plot every N epochs
+  metrics:
+    - "evm"
+    - "acpr"
+    - "nmse"
+    - "constellation"
