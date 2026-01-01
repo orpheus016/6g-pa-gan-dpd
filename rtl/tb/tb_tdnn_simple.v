@@ -2,7 +2,7 @@
 
 module tb_tdnn_simple;
     parameter DATA_WIDTH = 16;
-    parameter INPUT_DIM = 18;
+    parameter INPUT_DIM = 22;  // UPDATED: 2 + 2*5*2 = 22 features
     
     reg clk, rst_n;
     reg [DATA_WIDTH*INPUT_DIM-1:0] in_vector;
@@ -14,16 +14,16 @@ module tb_tdnn_simple;
     reg signed [15:0] weight_data;
     reg [1:0] weight_bank_sel;
     
-    // Simple weight memory
-    reg signed [15:0] weight_mem [0:1199];
+    // Weight memory (1298 params per bank × 3 banks = 3894 total)
+    reg signed [15:0] weight_mem [0:3999];
     
     initial begin
         integer i;
-        // Initialize with LARGER test values for visibility
-        for (i = 0; i < 1200; i = i + 1) begin
+        // Initialize with test values (extended for 22 inputs)
+        for (i = 0; i < 4000; i = i + 1) begin
             weight_mem[i] = 16'h1000;  // 0.125 in Q1.15 (4096/32768)
         end
-        $display("Initialized weights to 0x1000 (0.125 in Q1.15)");
+        $display("Initialized %0d weights to 0x1000 (0.125 in Q1.15)", 4000);
     end
     
     always @(posedge clk) begin
@@ -68,13 +68,13 @@ module tb_tdnn_simple;
         #50;
         
         // Test with simple input
-        $display("=== Starting Simple TDNN Test ===");
+        $display("=== Starting Simple TDNN Test (22 inputs) ===");
         $display("Input: Setting I=0.5, Q=0.25, rest=0.1");
         
         in_vector[0*16 +: 16] = 16'h4000;  // I = 0.5
         in_vector[1*16 +: 16] = 16'h2000;  // Q = 0.25
         
-        for (i = 2; i < 18; i = i + 1) begin
+        for (i = 2; i < 22; i = i + 1) begin
             in_vector[i*16 +: 16] = 16'h0CCC;  // 0.1
         end
         
@@ -134,7 +134,7 @@ module tb_tdnn_simple;
         case (dut.state)
             0: $display("[%0t] STATE: IDLE", $time);
             1: $display("[%0t] STATE: LOAD", $time);
-            2: $display("[%0t] STATE: FC1 (will compute 32 neurons of 18 weights each = 576 total)", $time);
+            2: $display("[%0t] STATE: FC1 (will compute 32 neurons of 22 weights each = 704 total)", $time);
             3: $display("[%0t] STATE: ACT1 (out_idx=%0d, should be 32)", $time, dut.out_idx);
             4: $display("[%0t] STATE: FC2 (will compute 16 neurons of 32 weights each = 512 total)", $time);
             5: $display("[%0t] STATE: ACT2 (out_idx=%0d, should be 16)", $time, dut.out_idx);
@@ -146,7 +146,7 @@ module tb_tdnn_simple;
     
     // Monitor neuron completion in FC1 with accumulator values
     always @(posedge clk) begin
-        if (dut.state == 2 && dut.in_idx == 17 && dut.out_idx < 3) begin  // FC1, last input of first 3 neurons
+        if (dut.state == 2 && dut.in_idx == 21 && dut.out_idx < 3) begin  // FC1, last input of first 3 neurons (22-1=21)
             $display("[%0t] FC1: Completed neuron %0d - acc[0]=0x%08h (%0d decimal)", 
                      $time, dut.out_idx, dut.acc[0], $signed(dut.acc[0]));
         end
