@@ -1,22 +1,33 @@
-# 6G PA GAN-DPD: Neural Network Digital Predistortion with A-SPSA Adaptation
+# 6G PA GAN-DPD: GAN-Trained TDNN Digital Predistortion with Decoupled A-SPSA
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![LSI Design Contest](https://img.shields.io/badge/LSI%20Contest-29th%20Okinawa-blue)](https://www.lsi-contest.com/)
 
 ## Overview
 
-**6G PA GAN-DPD** is a neural network-based Digital Predistortion (DPD) system for 6G GaN Power Amplifiers. The system uses:
+**6G PA GAN-DPD** is a neural network-based Digital Predistortion (DPD) system for wideband Power Amplifiers. 
 
-1. **Offline Training**: CWGAN-GP with spectral loss for memory-aware DPD model training
-2. **Online Adaptation**: Annealing-SPSA (A-SPSA) decoupled loop for efficient weight updates
-3. **Temperature Robustness**: 3-bank weight system (Cold/Normal/Hot) with automatic switching
+### What This Project Demonstrates
 
-### Key Features
+| Component | What It Does | What It Proves |
+|-----------|--------------|----------------|
+| **CWGAN-GP Training** | Trains TDNN with spectral loss (ACPR/EVM) | 2-3dB ACPR improvement over MSE-only |
+| **TDNN on FPGA** | 200MHz inference, fixed complexity | Scales to wideband unlike Volterra |
+| **Decoupled A-SPSA** | 1MHz adaptation with CDC | Tracks thermal drift safely |
+| **3-Bank Weights** | Cold/Normal/Hot pre-trained | Instant response to temperature |
 
-- **QAT (Quantization-Aware Training)** to minimize EVM degradation
-- **Memory-Effect Aware TDNN** architecture with bounded complexity
-- **Clock Domain Crossing (CDC)** safe weight updates via shadow memory
-- **Shift-register based learning rate** for energy-efficient adaptation
-- **Target Platforms**: PYNQ-Z1 (proof-of-concept), ZCU104 (production)
+### Honest Scope Statement
+
+**This is an algorithm validation demo, not a production RF system.**
+
+- ✅ Demonstrates GAN-trained DPD with measurable improvement
+- ✅ Shows proper FPGA architecture with CDC
+- ✅ Uses real measured PA data (OpenDPD)
+- ❌ Does NOT run against real PA hardware
+- ❌ Does NOT claim real-time 6G sub-THz operation
+- ❌ Does NOT replace conventional DPD entirely
+
+See [docs/rf_upgrade_guide.md](docs/rf_upgrade_guide.md) for path to real RF deployment.
 
 ---
 

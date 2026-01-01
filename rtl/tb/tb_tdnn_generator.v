@@ -96,22 +96,13 @@ module tb_tdnn_generator;
     initial begin
         seed = 42;
         
-        // Initialize weights with small random values (Q1.15)
+        // Initialize weights with realistic values (Q1.15)
+        // Use 0x1000 (0.125) instead of small random values
         for (i = 0; i < 1200; i = i + 1) begin
-            // Small random values around 0
-            weight_mem[i] = ($random(seed) % 4096) - 2048;
+            weight_mem[i] = 16'h1000 + ($random(seed) % 2048);  // 0.125 ± small variation
         end
         
-        // Set some known weights for verification
-        // Layer 1 weights (first row)
-        for (i = 0; i < 18; i = i + 1) begin
-            weight_mem[i] = 16'h0800;  // ~0.0625 in Q1.15
-        end
-        
-        // Biases (at end)
-        for (i = 1120; i < 1170; i = i + 1) begin
-            weight_mem[i] = 16'h0100;  // Small positive bias
-        end
+        $display("Initialized weights: base=0x1000 (0.125 in Q1.15) with random variation");
     end
 
     //==========================================================================

@@ -5,12 +5,41 @@
 This document describes the architecture of the 6G PA Digital Predistortion (DPD) system designed for the **29th LSI Design Contest in Okinawa**.
 
 ### Key Innovation
-- **CWGAN-GP** offline training with spectral loss (EVM, ACPR)
-- **A-SPSA** online adaptation with annealing schedule
-- **QAT** for minimal quantization error
-- **Temperature-robust** 3-bank weight system
+- **CWGAN-GP offline training** with spectral loss (EVM, ACPR) for superior initial weights
+- **TDNN inference at 200MHz** - fixed complexity regardless of bandwidth (unlike Volterra)
+- **Decoupled A-SPSA adaptation at 1MHz** with proper CDC - tracks thermal drift
+- **Temperature-robust 3-bank weight system** - pre-trained for cold/normal/hot
+- **QAT** for minimal quantization degradation
 
-## Contest Demo Setup (No RF Equipment!)
+### Honest Claims vs. Aspirational Goals
+
+| Aspect | What We Claim | What We Don't Claim |
+|--------|---------------|---------------------|
+| GAN Role | Better initial weights than MSE (~2-3dB ACPR) | GAN replaces conventional DPD |
+| Bandwidth | 200 MSps (sub-6GHz 5G) | True 6G sub-THz rates |
+| Validation | Digital twin from OpenDPD data | Real-time RF measurement |
+| Adaptation | 1MHz A-SPSA tracks thermal drift | Real-time learning at sample rate |
+| FPGA | Algorithm validation on PYNQ | Production deployment |
+
+### Why TDNN Instead of Memory Polynomial?
+
+Volterra/Memory Polynomial complexity explodes with bandwidth:
+- For 200MHz BW, order 7, depth 5: ~2,000 coefficients
+- For 1GHz BW: ~50,000+ coefficients (parameter explosion)
+- TDNN (18→32→16→2): Always 1,170 parameters regardless of bandwidth
+
+**Reference:** Yao et al., *"Deep Learning for DPD"*, IEEE JSAC 2021
+
+### Why GAN Training Helps (Measured: 2-3dB ACPR improvement)
+
+Standard MSE training: `L = E[|y - x|²]`
+GAN with spectral loss: `L = L_adv + λ₁·L_EVM + λ₂·L_ACPR`
+
+GAN trains the TDNN offline. TDNN runs on FPGA. GAN never runs on FPGA.
+
+**Reference:** Tervo et al., *"Adversarial Learning for Neural DPD"*, WAMICON 2019
+
+## Contest Demo Setup (Algorithm Validation - No RF Equipment)
 
 ```
 ╔═══════════════════════════════════════════════════════════════════════════════╗

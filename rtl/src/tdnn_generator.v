@@ -93,6 +93,14 @@ module tdnn_generator #(
     reg signed [ACT_WIDTH-1:0] fc2_out [0:HIDDEN2_DIM-1];
     reg signed [DATA_WIDTH-1:0] fc3_out [0:OUTPUT_DIM-1];
     
+    // Initialize layer outputs
+    integer k;
+    initial begin
+        for (k = 0; k < HIDDEN1_DIM; k = k + 1) fc1_out[k] = 0;
+        for (k = 0; k < HIDDEN2_DIM; k = k + 1) fc2_out[k] = 0;
+        for (k = 0; k < OUTPUT_DIM; k = k + 1) fc3_out[k] = 0;
+    end
+    
     // MAC accumulator
     reg signed [ACC_WIDTH-1:0] acc [0:NUM_MACS-1];
     
@@ -103,6 +111,14 @@ module tdnn_generator #(
     
     // Weight bank base address
     wire [15:0] bank_base = weight_bank_sel * BANK_SIZE;
+    
+    // Initialize accumulators
+    integer j;
+    initial begin
+        for (j = 0; j < NUM_MACS; j = j + 1) begin
+            acc[j] = 0;
+        end
+    end
     
     //==========================================================================
     // State Machine
@@ -170,6 +186,9 @@ module tdnn_generator #(
             in_idx <= 0;
             out_idx <= 0;
             mac_cnt <= 0;
+            for (i = 0; i < NUM_MACS; i = i + 1) begin
+                acc[i] <= 0;
+            end
         end
         else begin
             case (state)
@@ -177,24 +196,28 @@ module tdnn_generator #(
                     in_idx <= 0;
                     out_idx <= 0;
                     mac_cnt <= 0;
+                    acc[0] <= 0;  // Reset accumulator for next computation
                 end
                 
                 ST_FC1: begin
                     // FC1: 18 inputs → 32 outputs
+                    
+                    // Fetch weight and input
                     mac_weight <= weight_data;
                     mac_input <= input_buf[in_idx];
                     
-                    if (mac_cnt >= 2) begin
-                        // Pipeline: accumulate after 2 cycle delay
+                    // Accumulate (starts from cycle 1)
+                    if (in_idx > 0 || mac_cnt > 0) begin
                         acc[0] <= acc[0] + mac_product;
                     end
                     
+                    // Move to next input
                     if (in_idx == INPUT_DIM - 1) begin
-                        in_idx <= 0;
+                        // Finished one neuron - store result
+                        fc1_out[out_idx] <= (acc[0] + mac_product) >>> 16;  // Q16.16 -> Q8.8
                         out_idx <= out_idx + 1;
-                        // Store result and reset accumulator
-                        fc1_out[out_idx] <= acc[0][ACC_WIDTH-1 -: ACT_WIDTH];
-                        acc[0] <= 0;
+                        in_idx <= 0;
+                        acc[0] <= 0;  // Reset for next neuron
                     end
                     else begin
                         in_idx <= in_idx + 1;
@@ -204,17 +227,18 @@ module tdnn_generator #(
                 
                 ST_FC2: begin
                     // FC2: 32 inputs → 16 outputs
+                    
                     mac_weight <= weight_data;
                     mac_input <= fc1_out[in_idx];
                     
-                    if (mac_cnt >= 2) begin
+                    if (in_idx > 0 || mac_cnt > 0) begin
                         acc[0] <= acc[0] + mac_product;
                     end
                     
                     if (in_idx == HIDDEN1_DIM - 1) begin
-                        in_idx <= 0;
+                        fc2_out[out_idx] <= (acc[0] + mac_product) >>> 16;  // Q16.16 -> Q8.8
                         out_idx <= out_idx + 1;
-                        fc2_out[out_idx] <= acc[0][ACC_WIDTH-1 -: ACT_WIDTH];
+                        in_idx <= 0;
                         acc[0] <= 0;
                     end
                     else begin
@@ -225,17 +249,18 @@ module tdnn_generator #(
                 
                 ST_FC3: begin
                     // FC3: 16 inputs → 2 outputs
+                    
                     mac_weight <= weight_data;
                     mac_input <= fc2_out[in_idx];
                     
-                    if (mac_cnt >= 2) begin
+                    if (in_idx > 0 || mac_cnt > 0) begin
                         acc[0] <= acc[0] + mac_product;
                     end
                     
                     if (in_idx == HIDDEN2_DIM - 1) begin
-                        in_idx <= 0;
+                        fc3_out[out_idx] <= (acc[0] + mac_product) >>> 16;  // Q16.16 -> Q1.15
                         out_idx <= out_idx + 1;
-                        fc3_out[out_idx] <= acc[0][ACC_WIDTH-1 -: DATA_WIDTH];
+                        in_idx <= 0;
                         acc[0] <= 0;
                     end
                     else begin
@@ -290,7 +315,10 @@ module tdnn_generator #(
     
     // Initialize LUT from hex file
     initial begin
+        $display("Loading tanh LUT from tanh_lut.hex");
         $readmemh("tanh_lut.hex", tanh_lut);
+        $display("Tanh LUT loaded: first=0x%h, mid=0x%h, last=0x%h", 
+                 tanh_lut[0], tanh_lut[128], tanh_lut[255]);
     end
     
     // LUT index calculation

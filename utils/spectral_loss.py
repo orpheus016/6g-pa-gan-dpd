@@ -23,7 +23,7 @@ import numpy as np
 
 def compute_evm(
     measured: torch.Tensor,
-    reference: torch.Tensor,
+    reference: torch.Tensor = None,
     return_db: bool = True
 ) -> torch.Tensor:
     """
@@ -66,9 +66,9 @@ def compute_evm(
 
 def compute_acpr(
     signal: torch.Tensor,
-    sample_rate: float,
-    channel_bw: float,
-    adjacent_offset: float,
+    sample_rate: float = 200e6,
+    channel_bw: float = 100e6,
+    adjacent_offset: float = 100e6,
     return_db: bool = True
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
