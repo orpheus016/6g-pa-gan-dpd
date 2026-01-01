@@ -10,7 +10,7 @@ This script:
 4. Exports quantized weights for FPGA deployment
 
 Reference:
-- OpenDPD: https://github.com/OpenDPD/OpenDPD
+- OpenDPD: https://github.com/lab-emi/OpenDPD/ 
 - Tervo et al., "Adversarial Learning for Neural DPD", WAMICON 2019
 - Yao et al., "Deep Learning for DPD", IEEE JSAC 2021
 """
@@ -18,6 +18,7 @@ Reference:
 import os
 import argparse
 import numpy as np
+import pandas as pd
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -36,40 +37,47 @@ from utils.quantization import quantize_weights_fixed_point
 from utils.dataset import create_memory_features
 
 
-def load_opendpd_data(dataset_path: str = 'data/APA_200MHz.mat'):
+def load_opendpd_data(dataset_path: str = '/home/james-patrick/eda/designs/github/OpenDPD/datasets/APA_200MHz'):
     """
     Load OpenDPD dataset (measured PA input/output)
     
     The APA_200MHz dataset contains:
-    - x: PA input signal (complex baseband)
-    - y: PA output signal (complex baseband)
+    - train_input.csv / train_output.csv: PA input/output signals (I/Q format)
     - Measured from actual GaN PA at 200 MSps
     
     Returns:
         x_in: PA input signal (complex numpy array)
         y_out: PA output signal (complex numpy array)
-        sample_rate: 200e6 Hz
+        sample_rate: 983.04e6 Hz (from spec.json)
     """
-    if not os.path.exists(dataset_path):
+    train_in_path = os.path.join(dataset_path, 'train_input.csv')
+    train_out_path = os.path.join(dataset_path, 'train_output.csv')
+    
+    if not os.path.exists(train_in_path):
         print(f"Dataset not found at {dataset_path}")
-        print("Please download from: https://github.com/OpenDPD/OpenDPD")
+        print("Please download from: https://github.com/lab-emi/OpenDPD")
         print("Or run with --use-synthetic to use synthetic PA model")
         return None, None, None
     
-    data = loadmat(dataset_path)
-    x_in = data['x'].flatten().astype(np.complex64)
-    y_out = data['y'].flatten().astype(np.complex64)
+    # Load CSV files (I, Q columns)
+    import pandas as pd
+    input_df = pd.read_csv(train_in_path)
+    output_df = pd.read_csv(train_out_path)
+    
+    # Convert to complex arrays
+    x_in = (input_df['I'].values + 1j * input_df['Q'].values).astype(np.complex64)
+    y_out = (output_df['I'].values + 1j * output_df['Q'].values).astype(np.complex64)
     
     # Normalize to prevent overflow
     x_max = np.max(np.abs(x_in))
     x_in = x_in / x_max * 0.7
     y_out = y_out / x_max * 0.7
     
-    print(f"Loaded {len(x_in)} samples from OpenDPD")
+    print(f"Loaded {len(x_in)} samples from OpenDPD APA_200MHz")
     print(f"  Input power:  {10*np.log10(np.mean(np.abs(x_in)**2)):.1f} dBFS")
     print(f"  Output power: {10*np.log10(np.mean(np.abs(y_out)**2)):.1f} dBFS")
     
-    return x_in, y_out, 200e6
+    return x_in, y_out, 983.04e6  # Sample rate from spec.json
 
 
 def generate_synthetic_data(num_samples: int = 100000, sample_rate: float = 200e6):
