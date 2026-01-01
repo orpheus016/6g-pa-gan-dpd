@@ -4,7 +4,7 @@
 //
 // Description:
 //   Time-Delay Neural Network generator for DPD.
-//   Architecture: FC1(18→32) → LeakyReLU → FC2(32→16) → LeakyReLU → FC3(16→2) → Tanh
+//   Architecture: FC1(22→32) → LeakyReLU → FC2(32→16) → LeakyReLU → FC3(16→2) → Tanh
 //
 // Quantization:
 //   Weights:     Q1.15 (16-bit signed)
@@ -26,7 +26,8 @@ module tdnn_generator #(
     parameter WEIGHT_WIDTH  = 16,           // Q1.15 weights
     parameter ACT_WIDTH     = 16,           // Q8.8 activations
     parameter ACC_WIDTH     = 32,           // Q16.16 accumulator
-    parameter INPUT_DIM     = 18,           // Memory-aware input
+    parameter MEMORY_DEPTH  = 5,            // Memory taps
+    parameter INPUT_DIM     = 2 + 2*MEMORY_DEPTH*2,  // 2 + 2*M*2 = 22 (matches Python)
     parameter HIDDEN1_DIM   = 32,
     parameter HIDDEN2_DIM   = 16,
     parameter OUTPUT_DIM    = 2,
@@ -57,16 +58,16 @@ module tdnn_generator #(
     // Local Parameters
     //==========================================================================
     
-    // Weight address offsets
-    localparam WADDR_FC1 = 0;                           // 18*32 = 576 weights
-    localparam WADDR_B1  = 576;                         // 32 biases
-    localparam WADDR_FC2 = 608;                         // 32*16 = 512 weights
-    localparam WADDR_B2  = 1120;                        // 16 biases
-    localparam WADDR_FC3 = 1136;                        // 16*2 = 32 weights
-    localparam WADDR_B3  = 1168;                        // 2 biases
+    // Weight address offsets (UPDATED for 22 inputs)
+    localparam WADDR_FC1 = 0;                           // 22*32 = 704 weights
+    localparam WADDR_B1  = 704;                         // 32 biases
+    localparam WADDR_FC2 = 736;                         // 32*16 = 512 weights
+    localparam WADDR_B2  = 1248;                        // 16 biases
+    localparam WADDR_FC3 = 1264;                        // 16*2 = 32 weights
+    localparam WADDR_B3  = 1296;                        // 2 biases
     
-    // Bank offset
-    localparam BANK_SIZE = 1170;
+    // Bank offset (UPDATED total)
+    localparam BANK_SIZE = 1298;  // Total parameters per temperature bank
     
     // State machine
     localparam ST_IDLE     = 4'd0;
@@ -200,7 +201,7 @@ module tdnn_generator #(
                 end
                 
                 ST_FC1: begin
-                    // FC1: 18 inputs → 32 outputs
+                    // FC1: 22 inputs → 32 outputs
                     
                     // Fetch weight and input
                     mac_weight <= weight_data;

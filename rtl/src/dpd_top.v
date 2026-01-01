@@ -28,13 +28,13 @@ module dpd_top #(
     
     // Network architecture
     parameter MEMORY_DEPTH    = 5,          // Memory taps
-    parameter INPUT_DIM       = 18,         // 2 + (M+1) + 2*M
+    parameter INPUT_DIM       = 2 + 2*MEMORY_DEPTH*2,  // 2 + 2*M*2 = 22
     parameter HIDDEN1_DIM     = 32,
     parameter HIDDEN2_DIM     = 16,
     parameter OUTPUT_DIM      = 2,
     
-    // Total parameters per bank
-    parameter TOTAL_WEIGHTS   = 1170,       // FC1 + FC2 + FC3
+    // Total parameters per bank (UPDATED for 22 inputs)
+    parameter TOTAL_WEIGHTS   = 1298,       // FC1(22×32=704) + B1(32) + FC2(512) + B2(16) + FC3(32) + B3(2)
     
     // Temperature thresholds (raw ADC values)
     parameter TEMP_COLD_THRESH  = 12'd614,  // ~15°C
