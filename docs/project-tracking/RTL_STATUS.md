@@ -77,7 +77,7 @@ Results:
 | Module | Lines | Status | Function | Validated |
 |--------|-------|--------|----------|-----------|
 | `dpd_top.v` | 350 | ✅ Ready | Top integration, CDC | ⚠️ Needs system TB |
-| `tdnn_generator.v` | 400 | ✅ Validated | TDNN @ 200MHz | ✅ Simulation pass |
+| `tdnn_generator.v` | 400 | ✅ Validated | TDNN @ 200MHz to 400MHz | ✅ Simulation pass |
 | `aspsa_engine.v` | 300 | ⚠️ Needs ref | A-SPSA @ 1MHz | ❌ No Python model |
 | `shadow_memory.v` | 250 | ✅ Ready | CDC weight memory | ⏳ Need integration test |
 | `temp_controller.v` | 150 | ✅ Ready | Thermal switching | ⏳ Need scenario test |
@@ -367,7 +367,7 @@ vivado -mode batch -source scripts/build_pynq.tcl
 - ⏳ A-SPSA matches Python reference
 - ⏳ Thermal switching validated
 - ⏳ Full system testbench passes
-- ⏳ Timing closure @ 200MHz (post-synthesis)
+- ⏳ Timing closure @ 200MHz (post-synthesis) upgrade to 400MHz on ZCU-104
 
 ### Performance Validation (Waiting on ML)
 - ❌ ACPR improvement measured (need ML validation first)
@@ -375,15 +375,3 @@ vivado -mode batch -source scripts/build_pynq.tcl
 - ❌ Demo stable for >1 hour (hardware testing)
 
 **Overall:** RTL is ready, but **cannot proceed without ML validation**
-
----
-
-## Contact
-
-**RTL Lead:** [Your Team]  
-**Blocked By:** ML Team (need weight validation + A-SPSA reference)  
-**Critical Path:** ML validation → A-SPSA co-sim → Synthesis → Hardware
-
----
-
-*RTL is architecturally correct but cannot synthesize until ML confirms weights work.*
