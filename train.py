@@ -28,11 +28,12 @@ from typing import Dict, Optional, Tuple
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, TensorDataset
 from torch.utils.tensorboard import SummaryWriter
 import yaml
 from tqdm import tqdm
 import numpy as np
+import pandas as pd
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent))
@@ -49,6 +50,120 @@ def load_config(config_path: str) -> dict:
     with open(config_path, 'r') as f:
         config = yaml.safe_load(f)
     return config
+
+
+def load_measured_data(data_dir: Path, split: str = 'train'):
+    """Load measured PA input/output data from CSV files.
+    
+    Args:
+        data_dir: Directory containing train_input.csv, train_output.csv, etc.
+        split: 'train', 'val', or 'test'
+    
+    Returns:
+        u_pa: PA input signal (clean, what we want DPD to produce)
+        y_pa: PA output signal (distorted, input to DPD)
+    """
+    input_file = data_dir / f'{split}_input.csv'
+    output_file = data_dir / f'{split}_output.csv'
+    
+    if not input_file.exists() or not output_file.exists():
+        raise FileNotFoundError(f"Data files not found in {data_dir}")
+    
+    # Load CSV files
+    input_df = pd.read_csv(input_file)
+    output_df = pd.read_csv(output_file)
+    
+    # Convert to complex arrays
+    u_pa = (input_df['I'].values + 1j * input_df['Q'].values).astype(np.complex64)
+    y_pa = (output_df['I'].values + 1j * output_df['Q'].values).astype(np.complex64)
+    
+    # Normalize
+    max_val = np.max(np.abs(u_pa))
+    u_pa = u_pa / max_val * 0.7
+    y_pa = y_pa / max_val * 0.7
+    
+    print(f"Loaded {len(u_pa):,} {split} samples")
+    print(f"  PA input power:  {10*np.log10(np.mean(np.abs(u_pa)**2)):.2f} dBFS")
+    print(f"  PA output power: {10*np.log10(np.mean(np.abs(y_pa)**2)):.2f} dBFS")
+    
+    return u_pa, y_pa
+
+
+def apply_thermal_drift(y_pa: np.ndarray, temperature: float, reference_temp: float = 25.0):
+    """Apply thermal drift to PA output signal.
+    
+    Physical basis (GaN PA):
+    - Gain drift: ~0.5% per 10°C
+    - Phase drift: ~0.3° per 10°C
+    - AM/AM compression changes
+    
+    Args:
+        y_pa: PA output signal
+        temperature: Temperature in °C
+        reference_temp: Reference temperature (default 25°C)
+    
+    Returns:
+        y_thermal: Thermally-drifted PA output
+    """
+    dT = temperature - reference_temp
+    
+    # Gain drift (negative tempco for GaN)
+    alpha_gain = -0.005  # -0.5% per 10°C
+    gain_factor = 1 + alpha_gain * (dT / 10)
+    
+    # Phase drift
+    alpha_phase = 0.003  # ~0.3° per 10°C in radians
+    phase_shift = alpha_phase * (dT / 10)
+    
+    # AM/AM compression (more at high temp)
+    env = np.abs(y_pa)
+    alpha_amam = 0.01 * (dT / 50)
+    compression = 1 - alpha_amam * env**2
+    
+    # Apply all effects
+    y_thermal = y_pa * gain_factor * compression * np.exp(1j * phase_shift)
+    
+    return y_thermal
+
+
+def create_dpd_dataset(u_pa: np.ndarray, y_pa: np.ndarray, memory_depth: int = 5, 
+                       seq_length: int = 256) -> TensorDataset:
+    """Create dataset for DPD training using Indirect Learning Architecture.
+    
+    ILA: Train DPD as post-inverse: DPD(y_PA) ≈ u_PA
+    Then use same function as pre-inverse in deployment.
+    
+    Args:
+        u_pa: PA input (target for DPD)
+        y_pa: PA output (input to DPD)
+        memory_depth: Number of memory taps
+        seq_length: Sequence length for batching
+    
+    Returns:
+        TensorDataset with (input_features, target_signal) pairs
+    """
+    # Create memory features from PA output
+    num_samples = len(y_pa) - memory_depth
+    num_features = 2 * (memory_depth + 1)  # I/Q for each tap
+    
+    inputs = np.zeros((num_samples, memory_depth + 1, 2), dtype=np.float32)
+    targets = np.zeros((num_samples, 2), dtype=np.float32)
+    
+    for i in range(num_samples):
+        # Memory taps from PA output
+        for m in range(memory_depth + 1):
+            inputs[i, m, 0] = y_pa[i + memory_depth - m].real
+            inputs[i, m, 1] = y_pa[i + memory_depth - m].imag
+        
+        # Target is PA input (what we want to reconstruct)
+        targets[i, 0] = u_pa[i + memory_depth].real
+        targets[i, 1] = u_pa[i + memory_depth].imag
+    
+    # Convert to torch tensors
+    inputs_t = torch.from_numpy(inputs)
+    targets_t = torch.from_numpy(targets)
+    
+    return TensorDataset(inputs_t, targets_t)
 
 
 def create_models(config: dict, device: torch.device, qat: bool = False):
@@ -142,8 +257,7 @@ def create_schedulers(g_optimizer, d_optimizer, config: dict, num_epochs: int):
 def train_step(
     generator: nn.Module,
     discriminator: nn.Module,
-    pa_model: nn.Module,
-    batch: Dict[str, torch.Tensor],
+    batch: Tuple[torch.Tensor, torch.Tensor],
     g_optimizer: optim.Optimizer,
     d_optimizer: optim.Optimizer,
     w_loss: WassersteinLoss,
@@ -153,7 +267,14 @@ def train_step(
     step: int
 ) -> Dict[str, float]:
     """
-    Single training step.
+    Single training step using Indirect Learning Architecture (ILA).
+    
+    In ILA:
+    - Input: PA output (distorted signal y_PA)
+    - Generator produces: Predistorted signal (should match clean PA input u_PA)
+    - Target: PA input (clean signal u_PA)
+    
+    NO PA model in training loop - we train on measured data!
     
     Returns dictionary of loss values.
     """
@@ -161,9 +282,10 @@ def train_step(
     loss_config = train_config.get('loss', {})
     n_critic = train_config.get('n_critic', 5)
     
-    # Move batch to device
-    input_seq = batch['input'].to(device)  # [B, seq+M, 2]
-    target = batch['target'].to(device)    # [B, seq, 2]
+    # Unpack batch
+    input_seq, target = batch  # [B, M+1, 2], [B, 2]
+    input_seq = input_seq.to(device)
+    target = target.to(device)
     
     losses = {}
     
@@ -175,22 +297,16 @@ def train_step(
         
         # Generate DPD output
         with torch.no_grad():
-            dpd_output = generator(input_seq)  # [B, seq, 2]
-            
-        # Pass through PA model (DPD output → PA → should match target)
-        # Note: In real DPD, we want G(x) such that PA(G(x)) ≈ x
-        # So discriminator compares PA(G(x)) vs x
-        with torch.no_grad():
-            pa_output = pa_model(dpd_output, add_noise=False)
+            dpd_output = generator(input_seq)  # [B, 2]
             
         # Discriminator loss
-        # Real: target signal
-        # Fake: PA output of DPD (should match target)
-        # Condition: input signal
-        condition = input_seq[:, -target.shape[1]:, :]  # Align with output
+        # Real: clean PA input (target)
+        # Fake: DPD output (should also look clean)
+        # Condition: PA output (current input to DPD)
+        condition = input_seq[:, -1, :]  # Most recent sample
         
         d_loss, d_info = w_loss.discriminator_loss(
-            discriminator, target, pa_output, condition, device
+            discriminator, target, dpd_output, condition, device
         )
         
         d_loss.backward()
@@ -203,21 +319,18 @@ def train_step(
     # =================
     g_optimizer.zero_grad()
     
-    # Generate DPD output
-    dpd_output = generator(input_seq)
+    # Generate DPD output (should match clean PA input)
+    dpd_output = generator(input_seq)  # [B, 2]
     
-    # Pass through PA
-    pa_output = pa_model(dpd_output, add_noise=False)
+    # Adversarial loss (DPD output should look like clean signal)
+    condition = input_seq[:, -1, :]
+    g_adv_loss, g_info = w_loss.generator_loss(discriminator, dpd_output, condition)
     
-    # Adversarial loss
-    condition = input_seq[:, -target.shape[1]:, :]
-    g_adv_loss, g_info = w_loss.generator_loss(discriminator, pa_output, condition)
+    # Reconstruction loss (DPD output should match PA input)
+    recon_loss = nn.functional.l1_loss(dpd_output, target)
     
-    # Reconstruction loss (PA output should match target)
-    recon_loss = nn.functional.l1_loss(pa_output, target)
-    
-    # Spectral loss
-    spectral, spectral_components = spectral_loss(pa_output, target, return_components=True)
+    # Spectral loss (frequency domain similarity)
+    spectral, spectral_components = spectral_loss(dpd_output, target, return_components=True)
     
     # Combined generator loss
     g_total = (
@@ -240,12 +353,17 @@ def train_step(
 
 def validate(
     generator: nn.Module,
-    pa_model: nn.Module,
     val_loader: DataLoader,
     spectral_loss: SpectralLoss,
     device: torch.device
 ) -> Dict[str, float]:
-    """Validate model on validation set."""
+    """Validate model on validation set.
+    
+    In ILA validation:
+    - Input: PA output (distorted)
+    - DPD output: Should match PA input (clean)
+    - Metrics: EVM, NMSE, L1 between DPD output and clean PA input
+    """
     generator.eval()
     
     all_evm = []
@@ -253,18 +371,15 @@ def validate(
     all_recon = []
     
     with torch.no_grad():
-        for batch in val_loader:
-            input_seq = batch['input'].to(device)
-            target = batch['target'].to(device)
+        for input_seq, target in val_loader:
+            input_seq = input_seq.to(device)
+            target = target.to(device)
             
             # Generate DPD output
             dpd_output = generator(input_seq)
             
-            # Pass through PA
-            pa_output = pa_model(dpd_output, add_noise=False)
-            
-            # Compute metrics
-            metrics = spectral_loss.compute_metrics(pa_output, target)
+            # Compute metrics (DPD output vs clean PA input)
+            metrics = spectral_loss.compute_metrics(dpd_output, target)
             all_evm.append(metrics['evm_db'])
             all_nmse.append(metrics['nmse_db'])
             all_recon.append(metrics['l1_error'])
@@ -359,40 +474,47 @@ def main():
     print("Creating models...")
     generator, discriminator = create_models(config, device, qat=args.qat)
     
-    # Create PA digital twin
-    pa_model = PADigitalTwin(
-        memory_depth=config['pa'].get('memory_depth', 5),
-        nonlinear_order=config['pa'].get('nonlinear_order', 7),
-        gain_db=config['pa'].get('gain_db', 30.0)
-    ).to(device)
-    pa_model.eval()
-    
     print(f"Generator parameters: {sum(p.numel() for p in generator.parameters()):,}")
     print(f"Discriminator parameters: {sum(p.numel() for p in discriminator.parameters()):,}")
     
-    # Create dataset
-    print("Loading dataset...")
-    data_path = Path(config['data'].get('dataset_path', 'data/raw/'))
+    # Load measured PA data from CSV files
+    print("\nLoading measured PA data from CSV files...")
+    data_dir = Path('data')  # Directory with train_input.csv, train_output.csv, etc.
     
-    train_dataset = DPDDataset(
-        data_path=data_path,
-        memory_depth=config['model']['generator'].get('memory_depth', 5),
-        sequence_length=256,
-        temp_state=args.temp,
-        normalize=True,
-        augment_noise=0.01
-    )
-    train_dataset.train()
+    # Load training data
+    u_pa_train, y_pa_train = load_measured_data(data_dir, 'train')
     
-    val_dataset = DPDDataset(
-        data_path=data_path,
-        memory_depth=config['model']['generator'].get('memory_depth', 5),
-        sequence_length=256,
-        temp_state='normal',
-        normalize=True,
-        augment_noise=0.0
-    )
-    val_dataset.eval()
+    # Apply thermal drift based on temperature setting
+    print(f"\nApplying thermal drift (temp={args.temp})...")
+    if args.temp == 'all':
+        # Train on all three temperature variants
+        y_cold = apply_thermal_drift(y_pa_train, -20)
+        y_normal = y_pa_train.copy()
+        y_hot = apply_thermal_drift(y_pa_train, 70)
+        
+        # Concatenate all variants
+        y_pa_combined = np.concatenate([y_cold, y_normal, y_hot])
+        u_pa_combined = np.tile(u_pa_train, 3)
+        
+        print(f"  Combined dataset: {len(u_pa_combined):,} samples (3x thermal variants)")
+        y_pa_train = y_pa_combined
+        u_pa_train = u_pa_combined
+    elif args.temp == 'cold':
+        y_pa_train = apply_thermal_drift(y_pa_train, -20)
+        print("  Using cold variant (-20°C)")
+    elif args.temp == 'hot':
+        y_pa_train = apply_thermal_drift(y_pa_train, 70)
+        print("  Using hot variant (70°C)")
+    else:  # normal
+        print("  Using normal temperature (25°C)")
+    
+    # Create datasets
+    memory_depth = config['model']['generator'].get('memory_depth', 5)
+    train_dataset = create_dpd_dataset(u_pa_train, y_pa_train, memory_depth)
+    
+    # Load validation data (always use normal temperature)
+    u_pa_val, y_pa_val = load_measured_data(data_dir, 'val')
+    val_dataset = create_dpd_dataset(u_pa_val, y_pa_val, memory_depth)
     
     batch_size = config['training'].get('batch_size', 64)
     train_loader = DataLoader(
@@ -404,8 +526,9 @@ def main():
         num_workers=4, pin_memory=True
     )
     
-    print(f"Training samples: {len(train_dataset)}")
-    print(f"Validation samples: {len(val_dataset)}")
+    print(f"\nDataset sizes:")
+    print(f"  Training samples: {len(train_dataset):,}")
+    print(f"  Validation samples: {len(val_dataset):,}")
     
     # Create optimizers and schedulers
     g_optimizer, d_optimizer = create_optimizers(generator, discriminator, config)
@@ -448,7 +571,7 @@ def main():
         
         for batch_idx, batch in enumerate(pbar):
             losses = train_step(
-                generator, discriminator, pa_model, batch,
+                generator, discriminator, batch,
                 g_optimizer, d_optimizer, w_loss, spectral_loss,
                 config, device, global_step
             )
@@ -476,7 +599,7 @@ def main():
             epoch_losses[k] /= len(train_loader)
             
         # Validation
-        val_metrics = validate(generator, pa_model, val_loader, spectral_loss, device)
+        val_metrics = validate(generator, val_loader, spectral_loss, device)
         
         # Log validation metrics
         for k, v in val_metrics.items():
