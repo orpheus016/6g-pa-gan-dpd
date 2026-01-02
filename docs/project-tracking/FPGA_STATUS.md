@@ -332,6 +332,7 @@ Contest (Feb):        Simulation results only, no hardware ❌
 2. **[BLOCKED]** Wait for RTL to synthesize
 3. **[Can Do]** Locate PYNQ-Z1 board (check lab)
 4. **[Can Do]** Download PYNQ image (v3.0.1)
+5. **[Later]** Upgrade to ZCU-104 for 400MHz
 
 ### After Bitstream Ready (Week 2-3)
 5. Flash PYNQ SD card
