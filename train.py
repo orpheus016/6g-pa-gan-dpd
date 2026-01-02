@@ -446,6 +446,8 @@ def main():
                         help='Device to use (cuda/cpu)')
     parser.add_argument('--output-dir', type=str, default='checkpoints',
                         help='Output directory for checkpoints')
+    parser.add_argument('--output', type=str, default=None,
+                        help='Specific output checkpoint path (e.g., models/dpd_cold.pt)')
     args = parser.parse_args()
     
     # Load config
@@ -462,9 +464,16 @@ def main():
     print(f"Using device: {device}")
     
     # Create output directories
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    output_dir = Path(args.output_dir) / timestamp
-    output_dir.mkdir(parents=True, exist_ok=True)
+    if args.output:
+        # Use specific output path
+        output_path = Path(args.output)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_dir = output_path.parent
+    else:
+        # Use timestamped directory
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        output_dir = Path(args.output_dir) / f'{args.temp}_{timestamp}'
+        output_dir.mkdir(parents=True, exist_ok=True)
     
     # Save config
     with open(output_dir / 'config.yaml', 'w') as f:
@@ -634,6 +643,12 @@ def main():
     # Final save
     print(f"\nTraining complete! Best EVM: {best_evm:.2f} dB")
     print(f"Checkpoints saved to: {output_dir}")
+    
+    # If specific output path provided, save final best model there
+    if args.output:
+        print(f"Copying best checkpoint to: {args.output}")
+        best_checkpoint = torch.load(output_dir / 'best.pth', map_location='cpu')
+        torch.save(best_checkpoint, args.output)
     
     writer.close()
 

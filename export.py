@@ -182,8 +182,22 @@ def main():
     parser.add_argument(
         '--checkpoint', '-c',
         type=str,
-        required=True,
-        help='Path to trained model checkpoint'
+        help='Path to trained model checkpoint (for single network or normal temp)'
+    )
+    parser.add_argument(
+        '--checkpoint-cold',
+        type=str,
+        help='Path to cold temperature trained checkpoint'
+    )
+    parser.add_argument(
+        '--checkpoint-normal',
+        type=str,
+        help='Path to normal temperature trained checkpoint'
+    )
+    parser.add_argument(
+        '--checkpoint-hot',
+        type=str,
+        help='Path to hot temperature trained checkpoint'
     )
     parser.add_argument(
         '--config', '-f',
@@ -208,17 +222,26 @@ def main():
     parser.add_argument(
         '--temperature-banks',
         action='store_true',
-        help='Export separate weight banks for cold/normal/hot'
+        help='Export separate weight banks for cold/normal/hot (applies thermal scaling)'
+    )
+    parser.add_argument(
+        '--triple-trained',
+        action='store_true',
+        help='Use 3 separately trained checkpoints (requires --checkpoint-cold/normal/hot)'
     )
     args = parser.parse_args()
+    
+    # Validate arguments
+    if args.triple_trained:
+        if not all([args.checkpoint_cold, args.checkpoint_normal, args.checkpoint_hot]):
+            parser.error("--triple-trained requires --checkpoint-cold, --checkpoint-normal, and --checkpoint-hot")
+    else:
+        if not args.checkpoint:
+            parser.error("Either provide --checkpoint or use --triple-trained with 3 checkpoints")
     
     # Load config
     with open(args.config, 'r') as f:
         config = yaml.safe_load(f)
-    
-    # Load model
-    print(f"Loading checkpoint: {args.checkpoint}")
-    model = load_checkpoint(args.checkpoint, config)
     
     output_path = Path(args.output)
     bits = config['quantization']['weight_bits']
@@ -226,20 +249,103 @@ def main():
     if 'all' in args.format:
         args.format = ['hex', 'bin', 'header']
     
-    if args.temperature_banks:
-        # Export temperature-specific weight banks
-        print("\nExporting temperature weight banks...")
+    if args.triple_trained:
+        # Load 3 separately trained models
+        print("\n" + "="*60)
+        print("TRIPLE TRAINING MODE: Loading 3 separately trained networks")
+        print("="*60)
+        
+        print(f"\nLoading cold checkpoint: {args.checkpoint_cold}")
+        model_cold = load_checkpoint(args.checkpoint_cold, config)
+        
+        print(f"Loading normal checkpoint: {args.checkpoint_normal}")
+        model_normal = load_checkpoint(args.checkpoint_normal, config)
+        
+        print(f"Loading hot checkpoint: {args.checkpoint_hot}")
+        model_hot = load_checkpoint(args.checkpoint_hot, config)
+        
+        models = {
+            'cold': model_cold,
+            'normal': model_normal,
+            'hot': model_hot
+        }
+        
+        # Export each bank separately
+        for temp_name, model in models.items():
+            bank_id = {'cold': 0, 'normal': 1, 'hot': 2}[temp_name]
+            print(f"\n--- Exporting Bank {bank_id} ({temp_name.upper()}) ---")
+            
+            # Extract and quantize weights
+            all_weights = []
+            weights = {}
+            
+            for name, param in model.named_parameters():
+                if 'weight' in name or 'bias' in name:
+                    w_float = param.detach().cpu().numpy()
+                    w_fixed = quantize_weights_fixed_point(
+                        torch.tensor(w_float),
+                        num_bits=bits
+                    ).numpy()
+                    weights[name] = w_fixed
+                    all_weights.extend(w_fixed.flatten())
+            
+            all_weights = np.array(all_weights)
+            
+            # Export to files with bank suffix
+            if 'hex' in args.format:
+                export_verilog_hex(all_weights, output_path / f'weights_bank{bank_id}_{temp_name}.hex', bits)
+            
+            if 'bin' in args.format:
+                export_binary(all_weights, output_path / f'weights_bank{bank_id}_{temp_name}.bin', bits)
+            
+            if 'header' in args.format:
+                export_c_header(weights, output_path / f'dpd_weights_bank{bank_id}_{temp_name}.h', bits)
+        
+        print("\n" + "="*60)
+        print("TRIPLE TRAINING EXPORT COMPLETE")
+        print("="*60)
+        print(f"✅ Exported 3 independently trained weight banks")
+        print(f"   Bank 0 (Cold):   weights_bank0_cold.hex")
+        print(f"   Bank 1 (Normal): weights_bank1_normal.hex")
+        print(f"   Bank 2 (Hot):    weights_bank2_hot.hex")
+        print(f"✅ Total BRAM: {3 * len(all_weights) * bits // 8} bytes (9.3 KB)")
+        
+    elif args.temperature_banks:
+        # Single model with thermal scaling (legacy approach)
+        print("\n" + "="*60)
+        print("THERMAL SCALING MODE: Applying drift to single network")
+        print("="*60)
+        
+        print(f"\nLoading checkpoint: {args.checkpoint}")
+        model = load_checkpoint(args.checkpoint, config)
+        
+        # Export temperature-specific weight banks (apply thermal drift scaling)
         banks = export_temperature_banks(model, output_path, config)
         
-        # Also export C header with all banks
-        if 'header' in args.format:
-            all_weights = {}
-            for temp, weights in banks.items():
-                for name, w in weights.items():
-                    all_weights[f"{temp}_{name}"] = w
-            export_c_header(all_weights, output_path / 'dpd_weights.h', bits)
-    
+        for temp_name in ['cold', 'normal', 'hot']:
+            bank_id = {'cold': 0, 'normal': 1, 'hot': 2}[temp_name]
+            all_weights = []
+            
+            for name in sorted(banks[temp_name].keys()):
+                all_weights.extend(banks[temp_name][name].flatten())
+            
+            all_weights = np.array(all_weights)
+            
+            if 'hex' in args.format:
+                export_verilog_hex(
+                    all_weights, 
+                    output_path / f'weights_bank{bank_id}_{temp_name}_scaled.hex', 
+                    bits
+                )
+        
+        print(f"\n⚠️  Using thermal scaling (linear drift approximation)")
+        print(f"   Consider --triple-trained for better accuracy")
+        
     else:
+        # Single weight file export (no temperature banks)
+        print(f"\nLoading checkpoint: {args.checkpoint}")
+        model = load_checkpoint(args.checkpoint, config)
+        
         # Export single weight set
         weights = {}
         all_weights = []
@@ -270,10 +376,14 @@ def main():
     print("Export Summary")
     print("=" * 60)
     
+    # Use last loaded model for parameter count
+    if args.triple_trained:
+        model = models['normal']  # Use normal temp model for summary
+    
     total_params = sum(p.numel() for p in model.parameters())
     print(f"Total parameters: {total_params}")
     print(f"Weight bits: {bits}")
-    print(f"Memory size: {total_params * bits // 8} bytes")
+    print(f"Memory size per bank: {total_params * bits // 8} bytes")
     print(f"Output directory: {output_path}")
     
     # Layer breakdown

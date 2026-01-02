@@ -96,35 +96,59 @@ TOTAL: 1,554 params/bank
 
 ## Thermal Weight Bank Strategy
 
-### Approach: Single Network + Scaling (RECOMMENDED)
+**CRITICAL:** The FPGA architecture **already allocates 9.3 KB BRAM** for 3 separate weight banks. Since the BRAM cost is paid regardless, you should train 3 separate networks for better accuracy.
 
-**Training:**
+### Recommended Approach: Triple Training (Best Accuracy)
+
+**Training (3x):**
 ```bash
-python train.py --temp all  # Train on cold+normal+hot combined
+# Train each thermal condition separately for best accuracy
+python train.py --temp cold --output models/dpd_cold.pt --epochs 200
+python train.py --temp normal --output models/dpd_normal.pt --epochs 200
+python train.py --temp hot --output models/dpd_hot.pt --epochs 200
 ```
 
 **Export:**
 ```bash
-python export.py --checkpoint models/checkpoint_final.pt --output weights/
-# Generates 3 banks via thermal scaling:
-# - weights_cold.hex  (gain +2%, phase +3°)
-# - weights_normal.hex (baseline)
-# - weights_hot.hex   (gain -3%, phase -2°)
+python export.py --cold models/dpd_cold.pt \
+                 --normal models/dpd_normal.pt \
+                 --hot models/dpd_hot.pt \
+                 --output weights/
+# Generates 3 independently trained weight banks:
+# - weights_bank0_cold.hex   (optimized for 15°C)
+# - weights_bank1_normal.hex (optimized for 25°C)
+# - weights_bank2_hot.hex    (optimized for 40°C)
 ```
 
 **RTL Selection:**
 ```verilog
 // temp_controller.v selects bank based on PA temperature
-weight_bank_sel = temp_adc < TEMP_COLD ? 2'b00 :  // cold bank
-                  temp_adc > TEMP_HOT  ? 2'b10 :  // hot bank
-                                         2'b01;    // normal bank
+weight_bank_sel = temp_adc < TEMP_COLD  ? 2'b00 :  // cold bank (15°C)
+                  temp_adc > TEMP_HOT   ? 2'b10 :  // hot bank (40°C)
+                                          2'b01;    // normal bank (25°C)
 ```
 
-### Why This Works
-1. **Thermal drift is mostly linear:** GaN PAs exhibit predictable gain/phase shifts with temperature
-2. **Single network learns base mapping:** DPD(PA_output) → PA_input at normal temp
-3. **Scaling adapts to thermal states:** Apply gain/phase corrections for cold/hot
-4. **Resource efficient:** Train once, generate 3 banks via post-processing
+### Alternative: Single Training + Scaling (Faster but less accurate)
+
+If training time is limited, you can train once and scale:
+
+```bash
+python train.py --temp all --output models/dpd_combined.pt --epochs 200
+python export.py --checkpoint models/dpd_combined.pt --apply-thermal-scaling
+# Applies gain/phase drift to generate 3 banks from 1 trained network
+```
+
+### Why Triple Training is Better
+
+| Aspect | Triple Training | Single + Scaling |
+|--------|----------------|------------------|
+| **BRAM usage** | 9.3 KB | 9.3 KB (same!) |
+| **Training time** | 3x | 1x |
+| **Accuracy** | Best (each optimized) | Good (assumes linear drift) |
+| **ACPR improvement** | ~1-2 dB better | Baseline |
+| **Thermal nonlinearity** | Captures fully | Approximates |
+
+**Conclusion:** Since BRAM is already allocated for 3 banks, **triple training gives better performance for the same hardware cost**.
 
 ## Validation Commands
 

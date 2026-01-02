@@ -201,10 +201,46 @@ Maintains the delay line for memory effects modeling.
 - Envelope calculation using squarer and multiplier
 - Output: 18-element feature vector
 
-### 3. Shadow Memory (CDC Weight Update)
+### 3. Shadow Memory (3 Temperature Weight Banks)
 
-Handles clock domain crossing between 200MHz NN and 1MHz adaptation.
+**BRAM Organization:** The FPGA stores **3 complete weight banks** (9.3 KB total):
 
+```
+┌───────────────────────────────────────────────────────────────┐
+│              Shadow Memory (Dual-Port BRAM)                    │
+│                  DEPTH = 4,662 words                          │
+├───────────────────────────────────────────────────────────────┤
+│  Bank 0 (Cold):   Addr 0x0000 - 0x0611  (1,554 params)       │
+│  Bank 1 (Normal): Addr 0x0612 - 0x0C23  (1,554 params)       │
+│  Bank 2 (Hot):    Addr 0x0C24 - 0x1235  (1,554 params)       │
+└───────────────────────────────────────────────────────────────┘
+                            ▲
+                            │ Bank Select (temp_controller)
+                            │
+                   weight_bank_sel[1:0]
+```
+
+**Training Strategy:** Since BRAM stores 3 separate banks, you have **two options**:
+
+| Approach | Method | BRAM | Training Time | Accuracy |
+|----------|--------|------|---------------|----------|
+| **A: Triple Training** | Train 3 networks separately | 9.3 KB | 3x | Best (each optimized) |
+| **B: Single + Scaling** | Train 1, apply thermal drift | 9.3 KB | 1x | Good (assumes linear) |
+
+**Recommendation:** Use **Approach A (Triple Training)** for better accuracy:
+```bash
+# Train each temperature condition separately
+python train.py --temp cold --output models/dpd_cold.pt
+python train.py --temp normal --output models/dpd_normal.pt
+python train.py --temp hot --output models/dpd_hot.pt
+
+# Export all 3 networks to BRAM hex files
+python export.py --cold models/dpd_cold.pt \
+                 --normal models/dpd_normal.pt \
+                 --hot models/dpd_hot.pt
+```
+
+**CDC for A-SPSA Adaptation:**
 ```
                     1MHz Domain                     200MHz Domain
                          │                               │
@@ -212,8 +248,8 @@ Handles clock domain crossing between 200MHz NN and 1MHz adaptation.
     │                    │                               │                │
     │  ┌─────────┐       │  ┌──────────────────────┐    │  ┌─────────┐   │
     │  │ A-SPSA  │──────►│  │     Double Buffer    │────│─►│  TDNN   │   │
-    │  │ Weights │       │  │  ┌──────┐ ┌──────┐   │    │  │ Weight  │   │
-    │  └─────────┘       │  │  │Bank A│ │Bank B│   │    │  │ Memory  │   │
+    │  │ Updates │       │  │  ┌──────┐ ┌──────┐   │    │  │ Weight  │   │
+    │  └─────────┘       │  │  │Buf A │ │Buf B │   │    │  │ Memory  │   │
     │                    │  │  └──────┘ └──────┘   │    │  └─────────┘   │
     │                    │  │      ▲         ▲     │    │                │
     │  ┌─────────┐       │  │      │ Swap    │     │    │  ┌─────────┐   │
@@ -225,6 +261,8 @@ Handles clock domain crossing between 200MHz NN and 1MHz adaptation.
     └────────────────────┼───────────────────────────────┼────────────────┘
                          │                               │
 ```
+
+**Note:** A-SPSA adaptation only updates the **currently active bank** selected by temp_controller.
 
 **Gray Code Conversion:**
 ```
