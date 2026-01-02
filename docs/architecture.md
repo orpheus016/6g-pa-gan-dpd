@@ -157,10 +157,11 @@ The Time-Delay Neural Network generator is the core DPD model.
 
 **Input Feature Composition:**
 ```
-Input Vector (18 elements):
-├── Current I/Q: x[n] (2)
-├── Delayed I/Q: x[n-1], x[n-2], x[n-3] (6)
-└── Envelope Features: |x[n-k]|², |x[n-k]|⁴ for k=0..4 (10)
+Input Vector (30 elements):
+├── Current I/Q: I(n), Q(n) (2)
+├── Nonlinear envelope features: |x(n)|, |x(n)|², |x(n)|⁴ (3)
+├── Memory envelope features: |x(n-k)|, |x(n-k)|², |x(n-k)|⁴ for k=1..5 (15)
+└── Delayed I/Q: I(n-k), Q(n-k) for k=1..5 (10)
 ```
 
 **Fixed-Point Format:**
@@ -171,10 +172,10 @@ Input Vector (18 elements):
 | Accumulators | Q16.16 | [-32768, +32768) |
 
 **Parameter Count:**
-- Layer 1: 18×32 + 32 = 608
+- Layer 1: 30×32 + 32 = 992
 - Layer 2: 32×16 + 16 = 528
 - Layer 3: 16×2 + 2 = 34
-- **Total: 1,170 parameters**
+- **Total: 1,554 parameters**
 
 ### 2. Input Buffer (Memory Tap Assembly)
 
@@ -359,15 +360,15 @@ With full pipelining, throughput is 1 sample per cycle = **200 MSps**.
 ### Weight Memory Organization
 ```
 Address Range     Content              Size
-0x0000-0x023F    Layer 1 Weights      576 × 16-bit
-0x0240-0x043F    Layer 2 Weights      512 × 16-bit
-0x0440-0x045F    Layer 3 Weights       32 × 16-bit
-0x0460-0x047F    Layer 1 Biases        32 × 16-bit
-0x0480-0x048F    Layer 2 Biases        16 × 16-bit
-0x0490-0x0491    Layer 3 Biases         2 × 16-bit
+0x0000-0x03BF    Layer 1 Weights      960 × 16-bit
+0x03C0-0x05BF    Layer 2 Weights      512 × 16-bit
+0x05C0-0x05DF    Layer 3 Weights       32 × 16-bit
+0x05E0-0x05FF    Layer 1 Biases        32 × 16-bit
+0x0600-0x060F    Layer 2 Biases        16 × 16-bit
+0x0610-0x0611    Layer 3 Biases         2 × 16-bit
 
-Total: 1,170 × 16-bit = 2,340 bytes per bank
-3 banks × 2,340 bytes = 7,020 bytes total
+Total: 1,554 × 16-bit = 3,108 bytes per bank
+3 banks × 3,108 bytes = 9,324 bytes total
 ```
 
 ### Register Map (AXI-Lite)
@@ -388,16 +389,16 @@ Address    Register         Description
 ### PYNQ-Z1 (XC7Z020)
 | Resource | Used | Available | Utilization |
 |----------|------|-----------|-------------|
-| LUT | ~4,500 | 53,200 | 8.5% |
-| FF | ~3,200 | 106,400 | 3.0% |
-| BRAM18 | 4 | 280 | 1.4% |
-| DSP48 | 8 | 220 | 3.6% |
+| LUT | ~5,200 | 53,200 | 9.8% |
+| FF | ~3,800 | 106,400 | 3.6% |
+| BRAM18 | 5 | 280 | 1.8% |
+| DSP48 | 10 | 220 | 4.5% |
 
 ### ZCU104 (XCZU7EV)
 | Resource | Used | Available | Utilization |
 |----------|------|-----------|-------------|
-| CLB LUT | ~4,500 | 230,400 | 2.0% |
-| CLB FF | ~3,200 | 460,800 | 0.7% |
-| BRAM | 4 | 312 | 1.3% |
+| CLB LUT | ~5,200 | 230,400 | 2.3% |
+| CLB FF | ~3,800 | 460,800 | 0.8% |
+| BRAM | 5 | 312 | 1.6% |
 | URAM | 0 | 96 | 0% |
-| DSP | 8 | 1,728 | 0.5% |
+| DSP | 10 | 1,728 | 0.6% |

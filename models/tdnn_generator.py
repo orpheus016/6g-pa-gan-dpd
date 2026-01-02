@@ -14,19 +14,20 @@ Key Features:
 - Bounded complexity for FPGA deployment
 
 Architecture:
-    Input [18] → FC1 [32] → LeakyReLU → FC2 [16] → LeakyReLU → FC3 [2] → Tanh
+    Input [30] → FC1 [32] → LeakyReLU → FC2 [16] → LeakyReLU → FC3 [2] → Tanh
     
 Input Structure (M=5 memory depth):
-    [I(n), Q(n), |x(n)|, |x(n-1)|, ..., |x(n-M)|, I(n-1), Q(n-1), ..., I(n-M), Q(n-M)]
-    = 2 + (M+1) + 2*M = 18 dimensions
+    [I(n), Q(n), |x(n)|, |x(n)|², |x(n)|⁴, |x(n-1)|, |x(n-1)|², |x(n-1)|⁴, ...,
+     |x(n-M)|, |x(n-M)|², |x(n-M)|⁴, I(n-1), Q(n-1), ..., I(n-M), Q(n-M)]
+    = 2 + 3*(M+1) + 2*M = 30 dimensions
 
 Quantization (FPGA):
     Weights: Q1.15 (16-bit signed, range [-1, +0.99997])
     Activations: Q8.8 (16-bit signed, range [-128, +127.996])
     Accumulator: Q16.16 (32-bit for MAC operations)
 
-Total Parameters: 1,170
-    FC1: 18×32 + 32 = 608
+Total Parameters: 1,554
+    FC1: 30×32 + 32 = 992
     FC2: 32×16 + 16 = 528
     FC3: 16×2 + 2 = 34
 """
@@ -137,17 +138,22 @@ class FakeQuantizeModule(nn.Module):
 
 class MemoryTapAssembly(nn.Module):
     """
-    Assembles memory-aware input vector from IQ samples.
+    Assembles memory-aware input vector from IQ samples with nonlinear features.
     
     Input: IQ samples over time
-    Output: [I(n), Q(n), |x(n)|, ..., |x(n-M)|, I(n-1), Q(n-1), ..., I(n-M), Q(n-M)]
+    Output: [I(n), Q(n), |x(n)|, |x(n)|², |x(n)|⁴, ..., |x(n-M)|, |x(n-M)|², |x(n-M)|⁴,
+             I(n-1), Q(n-1), ..., I(n-M), Q(n-M)]
+    
+    Features per tap: magnitude, magnitude², magnitude⁴
+    Total dims: 2 (current IQ) + 3*(M+1) (nonlinear envelope) + 2*M (IQ memory) = 30 for M=5
     
     This module is for training only - FPGA uses shift registers.
     """
     def __init__(self, memory_depth: int = 5):
         super().__init__()
         self.memory_depth = memory_depth
-        self.input_dim = 2 + (memory_depth + 1) + 2 * memory_depth  # 18 for M=5
+        # 2 (current IQ) + 3*(M+1) (|x|, |x|², |x|⁴ for each tap) + 2*M (IQ memory)
+        self.input_dim = 2 + 3 * (memory_depth + 1) + 2 * memory_depth  # 30 for M=5
         
     def forward(self, iq_sequence: torch.Tensor) -> torch.Tensor:
         """
@@ -190,16 +196,19 @@ class MemoryTapAssembly(nn.Module):
 
 class TDNNGenerator(nn.Module):
     """
-    Memory-Aware TDNN Generator for DPD.
+    Memory-Aware TDNN Generator for DPD with nonlinear feature extraction.
     
-    Architecture: FC1(18→32) → LeakyReLU → FC2(32→16) → LeakyReLU → FC3(16→2) → Tanh
+    Architecture: FC1(30→32) → LeakyReLU → FC2(32→16) → LeakyReLU → FC3(16→2) → Tanh
+    
+    Features: [I(n), Q(n), |x(n)|, |x(n)|², |x(n)|⁴, ..., |x(n-M)|, |x(n-M)|², |x(n-M)|⁴,
+               I(n-1), Q(n-1), ..., I(n-M), Q(n-M)]
     
     Args:
         memory_depth: Number of memory taps (M)
         hidden_dims: Hidden layer dimensions [32, 16]
         leaky_slope: LeakyReLU negative slope
         
-    Total Parameters: 1,170
+    Total Parameters: 1,554 (increased from 1,170 due to larger input)
     """
     def __init__(
         self,
@@ -210,14 +219,14 @@ class TDNNGenerator(nn.Module):
         super().__init__()
         
         self.memory_depth = memory_depth
-        self.input_dim = 2 + (memory_depth + 1) + 2 * memory_depth  # 18 for M=5
+        self.input_dim = 2 + 3 * (memory_depth + 1) + 2 * memory_depth  # 30 for M=5
         self.hidden_dims = hidden_dims
         self.leaky_slope = leaky_slope
         
         # Memory tap assembly (training only)
         self.memory_assembly = MemoryTapAssembly(memory_depth)
         
-        # FC1: 18 → 32
+        # FC1: 30 → 32
         self.fc1 = nn.Linear(self.input_dim, hidden_dims[0])
         self.act1 = nn.LeakyReLU(negative_slope=leaky_slope)
         
@@ -296,6 +305,8 @@ class TDNNGeneratorQAT(nn.Module):
     Simulates fixed-point arithmetic during training to minimize
     EVM degradation when deployed on FPGA.
     
+    Includes nonlinear features: |x|, |x|², |x|⁴ for better PA modeling.
+    
     Quantization:
         Weights: Q1.15 (16-bit signed)
         Activations: Q8.8 (16-bit signed)
@@ -319,7 +330,7 @@ class TDNNGeneratorQAT(nn.Module):
         super().__init__()
         
         self.memory_depth = memory_depth
-        self.input_dim = 2 + (memory_depth + 1) + 2 * memory_depth
+        self.input_dim = 2 + 3 * (memory_depth + 1) + 2 * memory_depth
         self.hidden_dims = hidden_dims
         self.leaky_slope = leaky_slope
         self.weight_bits = weight_bits
@@ -331,7 +342,7 @@ class TDNNGeneratorQAT(nn.Module):
         # Quantizers for inputs
         self.input_quant = FakeQuantizeModule(n_bits=activation_bits)
         
-        # FC1: 18 → 32 (with quantization)
+        # FC1: 30 → 32 (with quantization)
         self.fc1 = nn.Linear(self.input_dim, hidden_dims[0])
         self.fc1_weight_quant = FakeQuantizeModule(n_bits=weight_bits, per_channel=True)
         self.fc1_act_quant = FakeQuantizeModule(n_bits=activation_bits)

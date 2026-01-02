@@ -3,18 +3,27 @@
 //==============================================================================
 //
 // Description:
-//   Time-Delay Neural Network generator for DPD.
-//   Architecture: FC1(22→32) → LeakyReLU → FC2(32→16) → LeakyReLU → FC3(16→2) → Tanh
+//   Time-Delay Neural Network generator for DPD with nonlinear feature extraction.
+//   Architecture: FC1(30→32) → LeakyReLU → FC2(32→16) → LeakyReLU → FC3(16→2) → Tanh
+//
+//   Input features: [I(n), Q(n), |x(n)|, |x(n)|², |x(n)|⁴, |x(n-1)|, |x(n-1)|², |x(n-1)|⁴, ...,
+//                    |x(n-M)|, |x(n-M)|², |x(n-M)|⁴, I(n-1), Q(n-1), ..., I(n-M), Q(n-M)]
 //
 // Quantization:
 //   Weights:     Q1.15 (16-bit signed)
 //   Activations: Q8.8 (16-bit signed)
 //   Accumulator: Q16.16 (32-bit)
 //
+// Parameters:
+//   Total: 1,554 params (up from 1,170)
+//   FC1: 30×32 + 32 = 992 (up from 608)
+//   FC2: 32×16 + 16 = 528
+//   FC3: 16×2 + 2 = 34
+//
 // Timing:
 //   - Pipelined MAC with 6 parallel multipliers
-//   - Latency: ~50 cycles per sample at 200 MHz
-//   - Throughput: 1 sample per ~50 cycles (4 Msps)
+//   - Latency: ~60 cycles per sample at 200 MHz (increased due to larger FC1)
+//   - Throughput: 1 sample per ~60 cycles (3.3 Msps)
 //
 // Author: Generated for 6G PA GAN-DPD Project
 //==============================================================================
@@ -27,7 +36,7 @@ module tdnn_generator #(
     parameter ACT_WIDTH     = 16,           // Q8.8 activations
     parameter ACC_WIDTH     = 32,           // Q16.16 accumulator
     parameter MEMORY_DEPTH  = 5,            // Memory taps
-    parameter INPUT_DIM     = 2 + 2*MEMORY_DEPTH*2,  // 2 + 2*M*2 = 22 (matches Python)
+    parameter INPUT_DIM     = 30,           // 2 + 3*(M+1) + 2*M = 30 for M=5
     parameter HIDDEN1_DIM   = 32,
     parameter HIDDEN2_DIM   = 16,
     parameter OUTPUT_DIM    = 2,
@@ -58,16 +67,16 @@ module tdnn_generator #(
     // Local Parameters
     //==========================================================================
     
-    // Weight address offsets (UPDATED for 22 inputs)
-    localparam WADDR_FC1 = 0;                           // 22*32 = 704 weights
-    localparam WADDR_B1  = 704;                         // 32 biases
-    localparam WADDR_FC2 = 736;                         // 32*16 = 512 weights
-    localparam WADDR_B2  = 1248;                        // 16 biases
-    localparam WADDR_FC3 = 1264;                        // 16*2 = 32 weights
-    localparam WADDR_B3  = 1296;                        // 2 biases
+    // Weight address offsets (for 30-dim input)
+    localparam WADDR_FC1 = 0;                           // 30*32 = 960 weights
+    localparam WADDR_B1  = 960;                         // 32 biases
+    localparam WADDR_FC2 = 992;                         // 32*16 = 512 weights
+    localparam WADDR_B2  = 1504;                        // 16 biases
+    localparam WADDR_FC3 = 1520;                        // 16*2 = 32 weights
+    localparam WADDR_B3  = 1552;                        // 2 biases
     
-    // Bank offset (UPDATED total)
-    localparam BANK_SIZE = 1298;  // Total parameters per temperature bank
+    // Bank offset
+    localparam BANK_SIZE = 1554;  // Total parameters per temperature bank
     
     // State machine
     localparam ST_IDLE     = 4'd0;

@@ -116,35 +116,36 @@ See [docs/rf_upgrade_guide.md](docs/rf_upgrade_guide.md) for path to real RF dep
 
 ```
 Input Vector (per sample n):
-┌────────────────────────────────────────────────────────────┐
-│  I(n), Q(n),                    ← Current IQ sample        │
-│  |x(n)|, |x(n-1)|, ..., |x(n-M)|  ← Envelope memory (M=5) │
-│  I(n-1), Q(n-1), ..., I(n-M), Q(n-M) ← IQ memory taps     │
-└────────────────────────────────────────────────────────────┘
-Total input dim = 2 + (M+1) + 2*M = 2 + 6 + 10 = 18 (for M=5)
+┌─────────────────────────────────────────────────────────────────────┐
+│  I(n), Q(n),                         ← Current IQ sample            │
+│  |x(n)|, |x(n)|², |x(n)|⁴            ← Nonlinear envelope features  │
+│  |x(n-1)|, |x(n-1)|², |x(n-1)|⁴, ... ← Envelope memory (M=5)        │
+│  I(n-1), Q(n-1), ..., I(n-M), Q(n-M) ← IQ memory taps               │
+└─────────────────────────────────────────────────────────────────────┘
+Total input dim = 2 + 3*(M+1) + 2*M = 2 + 18 + 10 = 30 (for M=5)
 ```
 
 ### Layer-by-Layer Specification
 
 | Layer | Type | Input | Output | Weights | Bias | Params | Format |
 |-------|------|-------|--------|---------|------|--------|--------|
-| **Input** | Buffer | 18×1 | 18×1 | - | - | - | Q1.15 |
-| **FC1** | Linear | 18 | 32 | 18×32=576 | 32 | 608 | Q1.15 |
+| **Input** | Buffer | 30×1 | 30×1 | - | - | - | Q1.15 |
+| **FC1** | Linear | 30 | 32 | 30×32=960 | 32 | 992 | Q1.15 |
 | **Act1** | LeakyReLU | 32 | 32 | - | - | - | Q8.8 |
 | **FC2** | Linear | 32 | 16 | 32×16=512 | 16 | 528 | Q1.15 |
 | **Act2** | LeakyReLU | 16 | 16 | - | - | - | Q8.8 |
 | **FC3** | Linear | 16 | 2 | 16×2=32 | 2 | 34 | Q1.15 |
 | **Output** | Tanh | 2 | 2 | - | - | - | Q1.15 |
-| **TOTAL** | | | | | | **1,170** | |
+| **TOTAL** | | | | | | **1,554** | |
 
 ### FPGA Resource Estimate (per weight bank)
 
 | Resource | PYNQ-Z1 | ZCU104 | Usage |
 |----------|---------|--------|-------|
-| **BRAM** | 4.5 KB | 4.5 KB | Weight storage (1,170 × 16-bit × 3 banks = 7KB) |
-| **DSP48** | 6 | 6 | MAC operations (parallel) |
-| **LUT** | ~2,500 | ~2,500 | Control logic, activation |
-| **FF** | ~1,800 | ~1,800 | Pipeline registers |
+| **BRAM** | 9.3 KB | 9.3 KB | Weight storage (1,554 × 16-bit × 3 banks = 9.3KB) |
+| **DSP48** | 10 | 10 | MAC operations (6) + nonlinear features (2) + interp (2) |
+| **LUT** | ~4,500 | ~4,500 | Control logic, activation, feature extraction |
+| **FF** | ~3,200 | ~3,200 | Pipeline registers, shift registers |
 
 ---
 
@@ -273,7 +274,7 @@ Annealing schedule (shift-register based):
 | `error_evm` | 24 | IN | Q8.16 | EVM error metric |
 | `error_acpr` | 24 | IN | Q8.16 | ACPR error metric |
 | `spsa_lr[15:0]` | 16 | INT | Q0.16 | Current learning rate |
-| `spsa_delta[1169:0]` | 1170 | INT | ±1 | Perturbation vector |
+| `spsa_delta[1553:0]` | 1554 | INT | ±1 | Perturbation vector |
 | `weight_update_req` | 1 | OUT | - | Request CDC transfer |
 | `weight_update_ack` | 1 | IN | - | CDC transfer complete |
 

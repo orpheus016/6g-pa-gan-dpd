@@ -114,9 +114,9 @@ trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 print(f"   Total parameters: {total_params:,}")
 print(f"   Trainable parameters: {trainable_params:,}")
-print(f"   Expected: 1,170 parameters")
+print(f"   Expected: 1,554 parameters")
 
-if total_params != 1170:
+if total_params != 1554:
     print(f"   ⚠️  WARNING: Parameter count mismatch!")
 else:
     print(f"   ✅ Parameter count matches!")

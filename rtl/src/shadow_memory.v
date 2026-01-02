@@ -20,7 +20,7 @@
 module shadow_memory #(
     parameter DATA_WIDTH = 16,
     parameter ADDR_WIDTH = 16,
-    parameter DEPTH      = 3510,        // 1170 weights × 3 banks
+    parameter DEPTH      = 4662,        // 1554 weights × 3 banks
     parameter NUM_BANKS  = 3
 )(
     // Read side (200 MHz - NN inference)

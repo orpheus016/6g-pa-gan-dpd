@@ -22,11 +22,9 @@ from utils.quantization import quantize_weights_fixed_point
 def load_checkpoint(checkpoint_path: str, config: dict) -> TDNNGenerator:
     """Load trained model from checkpoint."""
     model = TDNNGenerator(
-        input_dim=config['model']['generator']['input_dim'],
-        hidden_dims=config['model']['generator']['hidden_dims'],
-        output_dim=config['model']['generator']['output_dim'],
-        quantize=True,
-        num_bits=config['quantization']['weight_bits']
+        memory_depth=config['model']['generator'].get('memory_depth', 5),
+        hidden_dims=config['model']['generator'].get('hidden_dims', [32, 16]),
+        leaky_slope=config['model']['generator'].get('leaky_slope', 0.2)
     )
     
     checkpoint = torch.load(checkpoint_path, map_location='cpu')
