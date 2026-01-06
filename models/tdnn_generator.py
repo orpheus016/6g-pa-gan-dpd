@@ -177,17 +177,22 @@ class MemoryTapAssembly(nn.Module):
             # Current IQ: [I(n), Q(n)]
             current_iq = iq_sequence[:, n, :]  # [batch, 2]
             
-            # Envelope memory: [|x(n)|, |x(n-1)|, ..., |x(n-M)|]
+            # Envelope memory (and powers): [|x(n)|, |x(n-1)|, ..., |x(n-M)|]
             env_memory = envelope[:, n-M:n+1].flip(dims=[1])  # [batch, M+1]
+            env_feats = torch.cat([
+                env_memory,
+                env_memory ** 2,
+                env_memory ** 4
+            ], dim=1)  # [batch, 3*(M+1)]
             
             # IQ memory: [I(n-1), Q(n-1), ..., I(n-M), Q(n-M)]
             iq_memory = iq_sequence[:, n-M:n, :].flip(dims=[1]).reshape(batch_size, -1)  # [batch, 2*M]
             
             # Concatenate all
-            memory_vec = torch.cat([current_iq, env_memory, iq_memory], dim=1)  # [batch, 18]
+            memory_vec = torch.cat([current_iq, env_feats, iq_memory], dim=1)  # [batch, 2 + 3*(M+1) + 2*M]
             outputs.append(memory_vec)
             
-        return torch.stack(outputs, dim=1)  # [batch, seq_len - M, 18]
+        return torch.stack(outputs, dim=1)  # [batch, seq_len - M, input_dim]
 
 
 # =============================================================================
