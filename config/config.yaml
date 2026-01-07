@@ -51,13 +51,16 @@ model:
   # Generator: Memory-Aware TDNN
   generator:
     type: "tdnn"               # Time-Delay Neural Network
-    memory_depth: 5            # Number of memory taps (M)
+    memory_depth: 5            # Number of memory taps (M=5, so 6 total taps including current)
     
-    # Input structure: [I(n), Q(n), |x(n)|, ..., |x(n-M)|, I(n-1), Q(n-1), ..., I(n-M), Q(n-M)]
-    # Total input dim = 2 + (M+1) + 2*M = 2 + 6 + 10 = 18 for M=5
-    input_dim: 18
+    # Input structure (30-dimensional):
+    # - Current I, Q: 2 dims
+    # - Nonlinear envelope (|x|, |x|², |x|⁴) for 6 memory taps: 3×6 = 18 dims
+    # - Delayed I/Q from previous 5 taps: 2×5 = 10 dims
+    # Total input dim = 2 + 18 + 10 = 30
+    input_dim: 30
     
-    # Network architecture
+    # Network architecture (30 → 32 → 16 → 2)
     hidden_dims: [32, 16]      # Hidden layer dimensions
     output_dim: 2              # I_dpd, Q_dpd
     
