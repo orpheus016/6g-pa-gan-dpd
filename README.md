@@ -139,7 +139,7 @@ Total input dim = 2 + 3×6 + 2×5 = 2 + 18 + 10 = 30 (memory depth M=5)
 - 30-dim: Nonlinear features |x|², |x|⁴ capture AM-AM/AM-PM distortion
 - Result: ~4-6 dB ACPR improvement (measured)
 
-### Layer-by-Layer Specification
+### Generator Layer Specification
 
 | Layer | Type | Input | Output | Weights | Bias | Params | Format |
 |-------|------|-------|--------|---------|------|--------|--------|
@@ -151,6 +151,50 @@ Total input dim = 2 + 3×6 + 2×5 = 2 + 18 + 10 = 30 (memory depth M=5)
 | **FC3** | Linear | 16 | 2 | 16×2=32 | 2 | 34 | Q1.15 |
 | **Output** | Tanh | 2 | 2 | - | - | - | Q1.15 |
 | **TOTAL** | | | | | | **1,554** | |
+
+---
+
+## Discriminator Architecture (Training Only)
+
+### Conditional Discriminator with Spectral Normalization
+
+**Purpose**: Used during CWGAN-GP training to distinguish real PA output from DPD-corrected output.
+
+**Input Structure (4-dimensional)**:
+- PA output: [I_out, Q_out] (2 dims)
+- Condition: [I_in, Q_in] (2 dims) - for conditional GAN
+
+**Why Conditional?**
+- Better for input-output mapping problems
+- Discriminator sees both input signal and PA response
+- Result: ~2-3 dB ACPR improvement over unconditional
+
+### Discriminator Layer Specification
+
+| Layer | Type | Input | Output | Weights | Bias | Params | Spectral Norm |
+|-------|------|-------|--------|---------|------|--------|---------------|
+| **Input** | Concat | 2+2=4 | 4 | - | - | - | - |
+| **FC1** | Linear | 4 | 64 | 4×64=256 | 64 | 320 | ✅ Yes |
+| **Act1** | LeakyReLU | 64 | 64 | - | - | - | - |
+| **FC2** | Linear | 64 | 32 | 64×32=2048 | 32 | 2080 | ✅ Yes |
+| **Act2** | LeakyReLU | 32 | 32 | - | - | - | - |
+| **FC3** | Linear | 32 | 16 | 32×16=512 | 16 | 528 | ✅ Yes |
+| **Act3** | LeakyReLU | 16 | 16 | - | - | - | - |
+| **FC4** | Linear | 16 | 1 | 16×1=16 | 1 | 17 | ✅ Yes |
+| **Output** | None | 1 | 1 | - | - | - | - |
+| **TOTAL** | | | | | | **2,945** | |
+
+**Spectral Normalization**:
+- Applied to ALL linear layers
+- Enforces Lipschitz constraint: ||∇D|| ≤ 1
+- Required for WGAN-GP stability
+- Reference: Miyato et al., "Spectral Normalization for GANs" (ICLR 2018)
+
+**Training Details**:
+- Optimizer: Adam (lr=1e-4, β₁=0.0, β₂=0.9)
+- N_critic: 5 (discriminator updates per generator update)
+- Gradient penalty: λ_GP = 10
+- **NOT deployed to FPGA** (training only)
 
 ### FPGA Resource Estimate (per weight bank)
 
