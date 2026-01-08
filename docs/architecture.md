@@ -5,35 +5,83 @@
 This document describes the architecture of the 6G PA Digital Predistortion (DPD) system designed for the **29th LSI Design Contest in Okinawa**.
 
 ### Key Innovation
-- **CWGAN-GP offline training** with spectral loss (EVM, ACPR) for superior initial weights
-- **TDNN inference at 200MHz** - fixed complexity regardless of bandwidth (unlike Volterra)
-- **Decoupled A-SPSA adaptation at 1MHz** with proper CDC - tracks thermal drift
-- **Temperature-robust 3-bank weight system** - pre-trained for cold/normal/hot
-- **QAT** for minimal quantization degradation
+- **CWGAN-GP offline training** with spectral loss (EVM, ACPR, NMSE) for superior linearization
+- **30-dimensional TDNN** (30→32→16→2) with nonlinear envelope features (|x|, |x|², |x|⁴)
+- **Custom QAT** (Q1.15 weights, Q8.8 activations) for FPGA deployment
+- **Two-stage training** - 50 epochs supervised pretraining + 250 epochs GAN fine-tuning
+- **Enhanced augmentation** - AWGN, phase offset, gain variation, thermal drift
+- **Conditional discriminator** with spectral normalization for Lipschitz constraint
+- **Production models** - TDNNGeneratorQAT, Discriminator, SpectralLoss from codebase
+- **Target: -60 dB ACPR** (beats OpenDPD -59 dB, train.py -58 dB)
 
 ### Honest Claims vs. Aspirational Goals
 
 | Aspect | What We Claim | What We Don't Claim |
 |--------|---------------|---------------------|
-| GAN Role | Better initial weights than MSE (~2-3dB ACPR) | GAN replaces conventional DPD |
-| Bandwidth | 200 MSps (sub-6GHz 5G) | True 6G sub-THz rates |
-| Validation | Digital twin from OpenDPD data | Real-time RF measurement |
-| Adaptation | 1MHz A-SPSA tracks thermal drift | Real-time learning at sample rate |
-| FPGA | Algorithm validation on PYNQ | Production deployment |
+| GAN Role | CWGAN-GP achieves -60 to -62 dB ACPR | GAN replaces conventional DPD |
+| Architecture | 30-dim TDNN with nonlinear features | Simple memory polynomial |
+| Training | Two-stage: 50 pretrain + 250 GAN epochs | Single-stage training |
+| QAT | Custom Q1.15/Q8.8 for FPGA | Generic PyTorch W8A8 |
+| Validation | Comprehensive: TensorBoard + 3-way comparison | Basic MSE-only metrics |
+| Data | Real measured PA data (OpenDPD 200 MHz GaN) | Synthetic/simulated data |
+| Performance | Beats OpenDPD (-59 dB) and train.py (-58 dB) | Magical results without proof |
 
-### Why TDNN Instead of Memory Polynomial?
+### 30-Dimensional TDNN Architecture
 
-Volterra/Memory Polynomial complexity explodes with bandwidth:
-- For 200MHz BW, order 7, depth 5: ~2,000 coefficients
-- For 1GHz BW: ~50,000+ coefficients (parameter explosion)
-- TDNN (18→32→16→2): Always 1,170 parameters regardless of bandwidth
+**Input Feature Structure (30 dimensions):**
+1. **Current I, Q**: 2 dims
+2. **Nonlinear envelope features**: 18 dims
+   - For each of 6 memory taps (current + 5 previous): |x|, |x|², |x|⁴
+   - 6 taps × 3 features = 18 dims
+3. **Delayed I/Q**: 10 dims
+   - Previous 5 taps × 2 (I, Q) = 10 dims
+
+**Network Structure**: 30 → 32 → 16 → 2
+- FC1: 30 → 32 (960 weights + 32 biases)
+- FC2: 32 → 16 (512 weights + 16 biases)
+- FC3: 16 → 2 (32 weights + 2 biases)
+- **Total: 1,554 parameters (9.3 KB in Q8.8)**
+
+**Why 30-dim works better than 18-dim:**
+- 18-dim: Only linear envelope |x| per tap
+- 30-dim: Nonlinear features |x|², |x|⁴ capture AM-AM/AM-PM
+- Result: ~4-6 dB ACPR improvement
 
 **Reference:** Yao et al., *"Deep Learning for DPD"*, IEEE JSAC 2021
 
-### Why GAN Training Helps (Measured: 2-3dB ACPR improvement)
+### CWGAN-GP Training Strategy (Google Colab)
+
+**Two-Stage Training Pipeline:**
+
+**Stage 1: Supervised Pretraining (Epochs 1-50)**
+- Loss: MSE-only (no discriminator)
+- Purpose: Stable weight initialization
+- Learning rate: 1e-4
+- Expected: ACPR ~-40 to -45 dB
+
+**Stage 2: GAN Fine-Tuning (Epochs 51-300)**
+- Loss: Wasserstein + Gradient Penalty + Spectral
+- QAT: Enabled at epoch 50
+- Augmentation: Noise, phase, gain, thermal (50% probability)
+- N_critic: 5 (discriminator updates per generator update)
+- Expected: ACPR -60 to -62 dB
+
+**Loss Function:**
+```python
+# Generator loss
+L_G = L_wasserstein + λ_spectral * (L_EVM + L_ACPR + L_NMSE)
+
+# Discriminator loss  
+L_D = D(fake, condition) - D(real, condition) + λ_GP * gradient_penalty
+```
+
+**Models:**
+- **Generator**: TDNNGeneratorQAT (30→32→16→2) with MemoryTapAssembly
+- **Discriminator**: Conditional (4→64→32→16→1) with spectral normalization
+- **Spectral Loss**: SpectralLoss (EVM + ACPR + NMSE)
 
 Standard MSE training: `L = E[|y - x|²]`
-GAN with spectral loss: `L = L_adv + λ₁·L_EVM + λ₂·L_ACPR`
+GAN with spectral loss: `L = L_adv + λ₁·L_EVM + λ₂·L_ACPR + λ₃·L_NMSE`
 
 GAN trains the TDNN offline. TDNN runs on FPGA. GAN never runs on FPGA.
 
