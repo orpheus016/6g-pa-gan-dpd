@@ -18,7 +18,7 @@ This document presents **PN-TDNN-DPD**, a Phase-Normalized Time-Delay Neural Net
 
 ### 1.1 Problem Statement
 
-Modern 5G/6G systems employ wideband signals (200+ MHz) with high Peak-to-Average Power Ratio (PAPR) modulations (256-QAM OFDM). These signals drive Power Amplifiers (PAs) into nonlinear regions, causing:
+Modern 5G/6G systems employ wideband signals (200+ MHz) with high Peak-to-Average Power Ratio (PAPR) modulations (64-QAM OFDM (DPA_200MHz?), scale up later to 256-QAM and then 1024-QAM). These signals drive Power Amplifiers (PAs) into nonlinear regions, causing:
 - **Spectral regrowth** (adjacent channel interference)
 - **In-band distortion** (constellation warping)
 - **Regulatory violations** (ACPR > -45 dBc)

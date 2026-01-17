@@ -1,0 +1,33 @@
+# TO-DO List:
+
+## Datasets
+- [ ] Plot the IQ datasets to visualize signal characteristics and deterministically decide if its 256-QAM or 64-QAM (fetch APA_200MHz [DONE] and APA_20MHz_b and do comparison constellation plots) {jujur agak ragu dia ini datasetnya dah 264-QAM atau masih 64-QAM harusnya mah udah 256-QAM tp kita mesti validasi dulu}
+- [ ] Collect more labeled data for training and validation especially for 256-QAM (standard and advanced 5G) and 1024-QAM (6G)
+- [ ] Compare OpenDPD PA dataset to our PA digital twin dataset to see how well the digital twin simulates real-world behavior, then choose which dataset to use for training (tbh its only in validation no PA in training loop iirc). We might be able to treat one of them as test set if needed (the digital twin).
+
+## Plot and Visualization
+- [ ] Plot the datasets from IQ to Spectrum Analyzer plot to get ACPR, EVM, and NMSE value (check if the ipynb validation is valid or not because the dataset states that the spectrum analyzer plot has 5 channel look up OpenDPDv2)
+- [ ] MATLAB / Python for plotting???
+- [ ] Compare our mentioned plot to OpenDPD papers (check OpenDPD main github repo for more papers related to this work)
+
+## Model Development
+- [v] Check if this architecture is legit and why this architecture is chosen compared to the TRES-Delta-GRU or RNN on OpenDPDv2 or SparseDPD. Compare to them and what are the tradeoffs [Comparison] (docs/comparison_docs/ML/ML-ARCHITECTURE-COMPARISON.md) [DONE]
+- [ ] Compare current jupyter notebook to the backup to the proposed architecture
+- [ ] Customize Wasserstein and GP according to DPD application or no?
+- [ ] Check the best lambda (weigh) on spectral loos which one is the best for DPD training {i hope this can be determined without training first}
+- [ ] Try different architectures (CNN, RNN, Transformer) and compare their performance on DPD tasks if time allows
+- [ ] Thermal training check the flow again
+- [ ] Is M and K seriously that low??? (M=5, K=3) check again the PA model order from OpenDPD papers and other related works and our requirement for pre-6G (C. Tarver for foundation)
+- [ ] Check the best hyperparameters (learning rate, batch size, epochs) for training (OpenDPD epoch = 240 batch size = 64, initial lr = 5e-3 with reduceonplateau (! search what is this))
+- [ ] Implement early stopping to prevent overfitting during training
+- [ ] Ablation study on different components of the GAN architecture to understand their impact on performance, check knowledge/GAN folder for reference (not only for ML but also for RTL where the SPSA implementation is important to compare)
+- [ ] Explore different loss functions for the generator and discriminator to improve training stability and performance
+- [ ] Check Mediatek Paper for more maths on the adversarial system for DPD
+
+### QUESTIONS:
+? [ ] Why dont the other paper optimize on ACPR, ACLR, EVM, NMSE instantly but MSE first? is it because ACPR ETC is not differentiable or cant be determined on OFDM input signal? check this
+? [v] Why dont other paper use GAN for DPD or maybe they do but not popular? [Answer+Counter] (docs/comparison_docs/ML/GAN-CHALLENGES-AND-COUNTER-DPD.md)
+? [ ] Use MAE or MSE since on Mediatek Paper they use MAE? check this too
+? [ ] Why dont OpenDPDv2 use phase normalization on wideband like sparseDPD? check this too
+? [ ] Is 60dBc ACPR is even useful for 5G/6G standard? check this too [ANSWER: MINIMAL SEBENARNYA -48dBc UDH CUKUP BAGUS tapi emang DPD suka kesusahan maintain angka dibawah itu pas 200-400MHz keatas, more like -62dBc pas 200 biar pas 400 bisa -48 tp idk verify this] (knowledge/metrics/ACPR-REQUIREMENT-5G-6G.md)
+? [v] Why CWGANGP Works [Proof] (knowledge/GAN/PROOF-WHY-CWGANGP-WORKS.md)
