@@ -25,7 +25,7 @@
 - [ ] Check Mediatek Paper for more maths on the adversarial system for DPD
 
 ### QUESTIONS:
-? [ ] Why dont the other paper optimize on ACPR, ACLR, EVM, NMSE instantly but MSE first? is it because ACPR ETC is not differentiable or cant be determined on OFDM input signal? check this
+? [v] Why dont the other paper optimize on ACPR, ACLR, EVM, NMSE instantly but MSE first? is it because ACPR ETC is not differentiable or cant be determined on OFDM input signal? check this [Differentiable but cant only be acpr but the evm and nmse and l1 will be a variant of mse for fast convergence. acpr is the novelty (additional calculation tp jangan terlalu berat lambdanya di acpr klo evm aja udah cukup)] (knowledge/GAN/DIFFERENTIABLE-METRICS.md)
 ? [v] Why dont other paper use GAN for DPD or maybe they do but not popular? [Answer+Counter] (docs/comparison_docs/ML/GAN-CHALLENGES-AND-COUNTER-DPD.md)
 ? [ ] Use MAE or MSE since on Mediatek Paper they use MAE? check this too
 ? [ ] Why dont OpenDPDv2 use phase normalization on wideband like sparseDPD? check this too
