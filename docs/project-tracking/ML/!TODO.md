@@ -9,6 +9,7 @@
 - [ ] Plot the datasets from IQ to Spectrum Analyzer plot to get ACPR, EVM, and NMSE value (check if the ipynb validation is valid or not because the dataset states that the spectrum analyzer plot has 5 channel look up OpenDPDv2)
 - [ ] MATLAB / Python for plotting???
 - [ ] Compare our mentioned plot to OpenDPD papers (check OpenDPD main github repo for more papers related to this work)
+- [ ] QAT Performance plot after training (EVM vs Output Power, ACPR vs Output Power, NMSE vs Output Power)
 
 ## Model Development
 - [v] Check if this architecture is legit and why this architecture is chosen compared to the TRES-Delta-GRU or RNN on OpenDPDv2 or SparseDPD. Compare to them and what are the tradeoffs [Comparison] (docs/comparison_docs/ML/ML-ARCHITECTURE-COMPARISON.md) [DONE]
