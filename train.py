@@ -573,7 +573,10 @@ def main():
     # Create loss functions
     # Note: WassersteinLoss imported from utils.spectral_loss
     spectral_loss = SpectralLoss(
-        sample_rate=config['system'].get('sample_rate', 250e6)  # Updated to 250 MSps
+        sample_rate=config['system'].get('sample_rate', 200e6),
+        bw_main_ch=config.get('spectral_loss', {}).get('bw_main_ch', 200e6),
+        n_sub_ch=config.get('spectral_loss', {}).get('n_sub_ch', 10),
+        nperseg=config.get('spectral_loss', {}).get('nperseg', 1024),
     )
     
     # Resume from checkpoint

@@ -7,9 +7,9 @@
 # System Parameters
 # -----------------------------------------------------------------------------
 system:
-  sample_rate: 200e6           # 200 MHz sample rate (OpenDPD dataset)
-  target_rate: 400e6           # 400 MHz target for 6G (2× interpolation)
-  bandwidth: 4.8e9             # 6G carrier bandwidth (4.4-4.8 GHz)
+  sample_rate: 200000000           # 200 MHz sample rate (OpenDPD dataset)
+  target_rate: 400000000           # 400 MHz target for 6G (2× interpolation)
+  bandwidth: 4800000000             # 6G carrier bandwidth (4.4-4.8 GHz)
   
 # -----------------------------------------------------------------------------
 # PA Parameters (GaN Digital Twin)
@@ -152,8 +152,38 @@ training:
   best_metric: "evm"           # Save best based on EVM
 
 # -----------------------------------------------------------------------------
-# Data Configuration
+# Spectral Loss Configuration (EVM, ACLR, NMSE)
+# For dpa_200mhz: 1 channel, 10 sub-channels, 200 MSps
 # -----------------------------------------------------------------------------
+spectral_loss:
+  # Main channel configuration
+  bw_main_ch: 200000000            # Main channel bandwidth 200 MHz (dpa_200mhz)
+  
+  # Sub-channel analysis
+  n_sub_ch: 10                 # Number of sub-channels for EVM/ACLR analysis (dpa_200mhz)
+  
+  # FFT parameters
+  nperseg: 1024                # FFT segment length for Welch PSD
+  
+  # Metrics thresholds
+  targets:
+    evm_db: -45                # Target EVM: < -45 dB
+    aclr_db: -62               # Target ACLR: < -62 dBc
+    nmse_db: -42               # Target NMSE: < -42 dB
+
+# -----------------------------------------------------------------------------
+# Dataset Configuration
+# Current: dpa_200mhz (1 channel, 10 sub-channels, 200 MSps)
+# Previous: apa_200mhz (5 channels, 1 sub-channel, 250 MSps)
+# -----------------------------------------------------------------------------
+dataset:
+  name: "dpa_200mhz"
+  n_channels: 1                # Single-channel dpa_200mhz
+  n_sub_channels: 10           # 10 frequency sub-channels
+  sample_rate: 200000000           # 200 MSps sampling
+
+# Data Configuration
+# 
 data:
   # OpenDPD APA dataset
   dataset_path: "data/raw/"
