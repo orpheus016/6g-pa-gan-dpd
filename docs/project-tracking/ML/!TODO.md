@@ -7,14 +7,14 @@
 
 ## Plot and Visualization
 - [ ] Plot the datasets from IQ to Spectrum Analyzer plot to get ACPR, EVM, and NMSE value (check if the ipynb validation is valid or not because the dataset states that the spectrum analyzer plot has 5 channel look up OpenDPDv2) **LOOK UP UTILS ON OPENDPD**
-- [v] MATLAB / **Python** for plotting??? BUT OPENDPD USE MATLAB
+- [✓] MATLAB / **Python** for plotting??? BUT OPENDPD USE MATLAB
 - [ ] Compare our mentioned plot to OpenDPD papers (check OpenDPD main github repo for more papers related to this work)
 - [ ] QAT Performance plot after training (EVM vs Output Power, ACPR vs Output Power, NMSE vs Output Power)
 
 ## Model Development
-- [v] Check if this architecture is legit and why this architecture is chosen compared to the TRES-Delta-GRU or RNN on OpenDPDv2 or SparseDPD. Compare to them and what are the tradeoffs [Comparison] (docs/comparison_docs/ML/ML-ARCHITECTURE-COMPARISON.md) [DONE]
-- [v] Compare current jupyter notebook to the backup to the proposed architecture
-- [ ] Customize Wasserstein and GP according to DPD application or no?
+- [✓] Check if this architecture is legit and why this architecture is chosen compared to the TRES-Delta-GRU or RNN on OpenDPDv2 or SparseDPD. Compare to them and what are the tradeoffs [Comparison] (docs/comparison_docs/ML/ML-ARCHITECTURE-COMPARISON.md) [DONE]
+- [✓] Compare current jupyter notebook to the backup to the proposed architecture
+- [✓] Customize Wasserstein and GP according to DPD application or no? [DONE]
 - [ ] Check the best lambda (weight) on spectral loss which one is the best for DPD training {i hope this can be determined without training first}
 - [ ] Thermal training check the flow again
 - [ ] Is M and K seriously that low??? (M=5, K=3) check again the PA model order from OpenDPD papers and other related works and our requirement for pre-6G (C. Tarver for foundation)
@@ -27,9 +27,9 @@
 - [ ] Check Mediatek Paper for more maths on the adversarial system for DPD
 
 ### QUESTIONS:
-? [v] Why dont the other paper optimize on ACPR, ACLR, EVM, NMSE instantly but MSE first? is it because ACPR ETC is not differentiable or cant be determined on OFDM input signal? check this [Differentiable but cant only be acpr but the evm and nmse and l1 will be a variant of mse for fast convergence. acpr is the novelty (additional calculation tp jangan terlalu berat lambdanya di acpr klo evm aja udah cukup)] (knowledge/GAN/DIFFERENTIABLE-METRICS.md)
-? [v] Why dont other paper use GAN for DPD or maybe they do but not popular? [Answer+Counter] (docs/comparison_docs/ML/GAN-CHALLENGES-AND-COUNTER-DPD.md)
+? [✓] Why dont the other paper optimize on ACPR, ACLR, EVM, NMSE instantly but MSE first? is it because ACPR ETC is not differentiable or cant be determined on OFDM input signal? check this [Differentiable but cant only be acpr but the evm and nmse and l1 will be a variant of mse for fast convergence. acpr is the novelty (additional calculation tp jangan terlalu berat lambdanya di acpr klo evm aja udah cukup)] (knowledge/GAN/DIFFERENTIABLE-METRICS.md)
+? [✓] Why dont other paper use GAN for DPD or maybe they do but not popular? [Answer+Counter] (docs/comparison_docs/ML/GAN-CHALLENGES-AND-COUNTER-DPD.md)
 ? [ ] Use MAE or MSE since on Mediatek Paper they use MAE? check this too
 ? [ ] Why dont OpenDPDv2 use phase normalization on wideband like sparseDPD? check this too
 ? [ ] Is 60dBc ACPR is even useful for 5G/6G standard? check this too [ANSWER: MINIMAL SEBENARNYA -48dBc UDH CUKUP BAGUS tapi emang DPD suka kesusahan maintain angka dibawah itu pas 200-400MHz keatas, more like -62dBc pas 200 biar pas 400 bisa -48 tp idk verify this] (knowledge/metrics/ACPR-REQUIREMENT-5G-6G.md)
-? [v] Why CWGANGP Works [Proof] (knowledge/GAN/PROOF-WHY-CWGANGP-WORKS.md)
+? [✓] Why CWGANGP Works [Proof] (knowledge/GAN/PROOF-WHY-CWGANGP-WORKS.md)
