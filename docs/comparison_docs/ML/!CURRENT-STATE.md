@@ -1,25 +1,3 @@
-I'll analyze your training notebooks against your proposed architecture and OpenDPD's approach, then provide concrete next steps. 
-
-Searched for regex `class.*Generator|class.*TDNN|def forward` (`**/*.py`), 19 results
-
-Read [](file:///c%3A/Users/James/github/6g-pa-gan-dpd/train.py#1-1), lines 1 to 150
-
-Read [](file:///c%3A/Users/James/github/6g-pa-gan-dpd/train.py#150-150), lines 150 to 350
-
-Read [](file:///c%3A/Users/James/github/6g-pa-gan-dpd/models/tdnn_generator.py#150-150), lines 150 to 350
-
-Now let me check OpenDPD's training approach for comparison: 
-
-Searched codebase for "OpenDPD training loop ILA indirect learning architecture feature extraction phase normalization", 29 results
-
-Now let me check the actual tdnn_generator.py for the feature extraction details: 
-
-Read [](file:///c%3A/Users/James/github/6g-pa-gan-dpd/models/tdnn_generator.py#1-1), lines 1 to 150
-
-Now I have enough context. Let me provide a comprehensive critique and comparison.
-
----
-
 ## Critical Architecture Critique
 
 ### Problem 1: **THREE Different Architectures Across Files**
