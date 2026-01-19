@@ -126,7 +126,7 @@ def apply_thermal_drift(y_pa: np.ndarray, temperature: float, reference_temp: fl
 
 
 def create_dpd_dataset(u_pa: np.ndarray, y_pa: np.ndarray, memory_depth: int = 3, 
-                       seq_length: int = 256) -> TensorDataset:
+                       seq_length: int = 64) -> TensorDataset:
     """Create dataset for DPD training using Indirect Learning Architecture.
     
     ILA: Train DPD as post-inverse: DPD(y_PA) ≈ u_PA

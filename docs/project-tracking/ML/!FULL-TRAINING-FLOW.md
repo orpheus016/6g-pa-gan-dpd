@@ -650,8 +650,8 @@ model:
 data:
   sample_rate: 250e6
   channel_bw: 200e6
-  batch_size: 256
-  seq_length: 256
+  batch_size: 64
+  seq_length: 64
 
 # Training
 training:
@@ -694,7 +694,7 @@ spectral_loss:
 | `lambda_spec=10` | High weight on spectral loss; prioritizes RF metrics |
 | `beta1=0.0` | WGAN-GP recommendation; no momentum for stability |
 | `qat_start_epoch=300` | Start QAT after G converges; avoid early quantization noise |
-| `batch_size=256` | Balance between gradient variance and memory |
+| `batch_size=64` | Balance between gradient variance and memory |
 
 ---
 
