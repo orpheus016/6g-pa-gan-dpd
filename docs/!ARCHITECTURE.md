@@ -959,7 +959,7 @@ Based on Xilinx Power Estimator (XPE) and post-synthesis reports:
 ### Phase 1: Training Pipeline (Python/Colab)
 - [ ] Implement `PNTDNNGenerator` with 24-dim phase-normalized features
 - [ ] Integrate spectral loss (λ_EVM + λ_ACPR) in CWGAN-GP
-- [ ] Two-stage training: float32 (100 epochs) → QAT (50 epochs)
+- [ ] Two-stage training: float32 (100 epochs) → QAT (50 epochs) //too small bruh ini rada ngaco
 - [ ] Export weights: Q1.15 format, little-endian binary
 - [ ] Validate: ACPR < -60 dBc, EVM < -45 dB on test set
 

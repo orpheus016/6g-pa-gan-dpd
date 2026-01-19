@@ -38,8 +38,7 @@ import pandas as pd
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent))
 
-from models import TDNNGenerator, TDNNGeneratorQAT, Discriminator, PADigitalTwin
-from models.discriminator import WassersteinLoss
+from models import PNTDNNGenerator, create_discriminator, PADigitalTwin
 from utils.spectral_loss import SpectralLoss, compute_evm, compute_acpr
 from utils.dataset import DPDDataset, SyntheticDPDDataset
 from utils.quantization import QuantizationConfig
@@ -126,40 +125,50 @@ def apply_thermal_drift(y_pa: np.ndarray, temperature: float, reference_temp: fl
     return y_thermal
 
 
-def create_dpd_dataset(u_pa: np.ndarray, y_pa: np.ndarray, memory_depth: int = 5, 
+def create_dpd_dataset(u_pa: np.ndarray, y_pa: np.ndarray, memory_depth: int = 3, 
                        seq_length: int = 256) -> TensorDataset:
     """Create dataset for DPD training using Indirect Learning Architecture.
     
     ILA: Train DPD as post-inverse: DPD(y_PA) ≈ u_PA
     Then use same function as pre-inverse in deployment.
     
+    PNTDNNGenerator handles phase-normalized feature extraction internally,
+    so we return raw IQ sequences. Generator will extract 24-dim features.
+    
     Args:
         u_pa: PA input (target for DPD)
         y_pa: PA output (input to DPD)
-        memory_depth: Number of memory taps
+        memory_depth: Number of memory taps (default M=3 for PN-TDNN)
         seq_length: Sequence length for batching
     
     Returns:
-        TensorDataset with (input_features, target_signal) pairs
+        TensorDataset with (raw_iq_sequence, target_iq) pairs
     """
-    # Create memory features from PA output
+    # Create sliding windows of IQ sequences
+    # Input: raw IQ samples from PA output (DPD input)
+    # Target: IQ samples from PA input (what DPD should produce)
     num_samples = len(y_pa) - memory_depth
-    num_features = 2 * (memory_depth + 1)  # I/Q for each tap
     
+    # Sequences: [batch, seq_len, 2] where seq_len >= memory_depth + 1
+    # For each output, we need memory_depth past samples + current sample
     inputs = np.zeros((num_samples, memory_depth + 1, 2), dtype=np.float32)
     targets = np.zeros((num_samples, 2), dtype=np.float32)
     
     for i in range(num_samples):
-        # Memory taps from PA output
+        # Memory taps from PA output (IQ samples in time order)
         for m in range(memory_depth + 1):
-            inputs[i, m, 0] = y_pa[i + memory_depth - m].real
-            inputs[i, m, 1] = y_pa[i + memory_depth - m].imag
+            idx = i + memory_depth - m
+            inputs[i, m, 0] = y_pa[idx].real
+            inputs[i, m, 1] = y_pa[idx].imag
         
-        # Target is PA input (what we want to reconstruct)
-        targets[i, 0] = u_pa[i + memory_depth].real
-        targets[i, 1] = u_pa[i + memory_depth].imag
+        # Target is PA input (what DPD should produce to cancel distortion)
+        target_idx = i + memory_depth
+        targets[i, 0] = u_pa[target_idx].real
+        targets[i, 1] = u_pa[target_idx].imag
     
     # Convert to torch tensors
+    # inputs: [batch, memory_depth+1, 2] - raw IQ sequences
+    # targets: [batch, 2] - target IQ samples
     inputs_t = torch.from_numpy(inputs)
     targets_t = torch.from_numpy(targets)
     
@@ -167,34 +176,27 @@ def create_dpd_dataset(u_pa: np.ndarray, y_pa: np.ndarray, memory_depth: int = 5
 
 
 def create_models(config: dict, device: torch.device, qat: bool = False):
-    """Create generator and discriminator models."""
-    gen_config = config['model']['generator']
-    disc_config = config['model']['discriminator']
+    """Create generator and discriminator models.
     
-    # Generator
-    if qat:
-        quant_config = config.get('quantization', {})
-        generator = TDNNGeneratorQAT(
-            memory_depth=gen_config.get('memory_depth', 5),
-            hidden_dims=gen_config.get('hidden_dims', [32, 16]),
-            leaky_slope=gen_config.get('leaky_slope', 0.2),
-            weight_bits=quant_config.get('weight', {}).get('bits', 16),
-            activation_bits=quant_config.get('activation', {}).get('bits', 16)
-        )
-    else:
-        generator = TDNNGenerator(
-            memory_depth=gen_config.get('memory_depth', 5),
-            hidden_dims=gen_config.get('hidden_dims', [32, 16]),
-            leaky_slope=gen_config.get('leaky_slope', 0.2)
-        )
-        
-    # Discriminator
-    discriminator = Discriminator(
-        input_dim=disc_config.get('input_dim', 4),
-        hidden_dims=disc_config.get('hidden_dims', [64, 32, 16]),
-        leaky_slope=disc_config.get('leaky_slope', 0.2),
-        use_spectral_norm=disc_config.get('use_spectral_norm', True)
+    Uses PNTDNNGenerator (phase-normalized) with built-in QAT support.
+    """
+    gen_config = config['model'].get('generator', {})
+    
+    # Generator: Phase-Normalized TDNN
+    # Default: M=3, hidden=[32, 16], 24-dim input -> 1,362 params
+    generator = PNTDNNGenerator(
+        memory_depth=gen_config.get('memory_depth', 3),
+        hidden_dims=gen_config.get('hidden_dims', [32, 16]),
+        leaky_slope=gen_config.get('leaky_slope', 0.2)
     )
+    
+    # Enable QAT if requested
+    if qat:
+        generator.enable_qat()
+        print("QAT enabled: Q1.15 weights, Q8.8 activations")
+        
+    # Discriminator: Conditional WGAN-GP (fixed architecture)
+    discriminator = create_discriminator()
     
     return generator.to(device), discriminator.to(device)
 
@@ -260,7 +262,6 @@ def train_step(
     batch: Tuple[torch.Tensor, torch.Tensor],
     g_optimizer: optim.Optimizer,
     d_optimizer: optim.Optimizer,
-    w_loss: WassersteinLoss,
     spectral_loss: SpectralLoss,
     config: dict,
     device: torch.device,
@@ -281,6 +282,7 @@ def train_step(
     train_config = config['training']
     loss_config = train_config.get('loss', {})
     n_critic = train_config.get('n_critic', 5)
+    gp_weight = train_config.get('gp_weight', 10.0)
     
     # Unpack batch
     input_seq, target = batch  # [B, M+1, 2], [B, 2]
@@ -295,57 +297,82 @@ def train_step(
     for _ in range(n_critic):
         d_optimizer.zero_grad()
         
-        # Generate DPD output
+        # Generate DPD output (detach to prevent gradient flow)
         with torch.no_grad():
             dpd_output = generator(input_seq)  # [B, 2]
             
-        # Discriminator loss
-        # Real: clean PA input (target)
-        # Fake: DPD output (should also look clean)
-        # Condition: PA output (current input to DPD)
-        condition = input_seq[:, -1, :]  # Most recent sample
+        # Discriminator loss components
+        # Real: clean PA input (what DPD should produce)
+        # Fake: DPD output (what DPD actually produces)
+        # Condition: Current PA output sample (what DPD saw)
+        condition = input_seq[:, -1, :]  # [B, 2] - most recent sample
         
-        d_loss, d_info = w_loss.discriminator_loss(
-            discriminator, target, dpd_output, condition, device
-        )
+        # Critic scores
+        d_real = discriminator(target, condition)  # [B, 1]
+        d_fake = discriminator(dpd_output.detach(), condition)  # [B, 1]
         
-        d_loss.backward()
+        # Wasserstein loss: maximize D(real) - D(fake)
+        d_loss = d_fake.mean() - d_real.mean()
+        
+        # Gradient penalty: enforce 1-Lipschitz constraint
+        batch_size = target.size(0)
+        alpha = torch.rand(batch_size, 1, device=device)
+        interpolates = alpha * target + (1 - alpha) * dpd_output.detach()
+        interpolates.requires_grad_(True)
+        
+        d_interp = discriminator(interpolates, condition)
+        
+        gradients = torch.autograd.grad(
+            outputs=d_interp,
+            inputs=interpolates,
+            grad_outputs=torch.ones_like(d_interp),
+            create_graph=True,
+            retain_graph=True,
+        )[0]
+        
+        gradients_norm = gradients.view(batch_size, -1).norm(2, dim=1)
+        gp = ((gradients_norm - 1) ** 2).mean()
+        
+        d_total = d_loss + gp_weight * gp
+        d_total.backward()
         d_optimizer.step()
         
-    losses.update({f'd_{k}': v for k, v in d_info.items()})
+    losses['d_wasserstein'] = d_loss.item()
+    losses['d_gp'] = gp.item()
+    losses['d_total'] = d_total.item()
     
     # =================
     # Train Generator
     # =================
     g_optimizer.zero_grad()
     
-    # Generate DPD output (should match clean PA input)
+    # Generate DPD output
     dpd_output = generator(input_seq)  # [B, 2]
     
-    # Adversarial loss (DPD output should look like clean signal)
-    condition = input_seq[:, -1, :]
-    g_adv_loss, g_info = w_loss.generator_loss(discriminator, dpd_output, condition)
+    # Adversarial loss: fool discriminator
+    d_fake = discriminator(dpd_output, condition)  # [B, 1]
+    g_adv_loss = -d_fake.mean()  # Minimize -D(fake) = maximize D(fake)
     
-    # Reconstruction loss (DPD output should match PA input)
+    # Reconstruction loss (L1: DPD output should match PA input)
     recon_loss = nn.functional.l1_loss(dpd_output, target)
     
-    # Spectral loss (frequency domain similarity)
+    # Spectral loss (ACPR, EVM, NMSE)
     spectral, spectral_components = spectral_loss(dpd_output, target, return_components=True)
     
-    # Combined generator loss
+    # Combined generator loss with weighted components
     g_total = (
         loss_config.get('adversarial', 1.0) * g_adv_loss +
         loss_config.get('reconstruction_l1', 50.0) * recon_loss +
-        spectral
+        loss_config.get('spectral', 10.0) * spectral
     )
     
     g_total.backward()
     g_optimizer.step()
     
-    losses['g_total'] = g_total.item()
     losses['g_adv'] = g_adv_loss.item()
     losses['g_recon'] = recon_loss.item()
     losses['g_spectral'] = spectral.item()
+    losses['g_total'] = g_total.item()
     losses.update({f'g_{k}': v.item() for k, v in spectral_components.items()})
     
     return losses
@@ -518,7 +545,8 @@ def main():
         print("  Using normal temperature (25°C)")
     
     # Create datasets
-    memory_depth = config['model']['generator'].get('memory_depth', 5)
+    # Default: M=3 for PN-TDNN (matches ARCHITECTURE.md)
+    memory_depth = config['model'].get('generator', {}).get('memory_depth', 3)
     train_dataset = create_dpd_dataset(u_pa_train, y_pa_train, memory_depth)
     
     # Load validation data (always use normal temperature)
@@ -545,9 +573,9 @@ def main():
     g_scheduler, d_scheduler = create_schedulers(g_optimizer, d_optimizer, config, num_epochs)
     
     # Create loss functions
-    w_loss = WassersteinLoss(gp_weight=config['training'].get('gp_weight', 10.0))
+    # Note: WassersteinLoss imported from utils.spectral_loss
     spectral_loss = SpectralLoss(
-        sample_rate=config['system'].get('sample_rate', 200e6)
+        sample_rate=config['system'].get('sample_rate', 250e6)  # Updated to 250 MSps
     )
     
     # Resume from checkpoint
@@ -581,7 +609,7 @@ def main():
         for batch_idx, batch in enumerate(pbar):
             losses = train_step(
                 generator, discriminator, batch,
-                g_optimizer, d_optimizer, w_loss, spectral_loss,
+                g_optimizer, d_optimizer, spectral_loss,
                 config, device, global_step
             )
             
