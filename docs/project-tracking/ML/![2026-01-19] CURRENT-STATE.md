@@ -109,7 +109,7 @@ loss = L1(dpd_output, target)       # target = u_PA (measured)
 
 ## What a Senior Engineer Would Do
 
-### Step 1: **Freeze the Architecture (Do This First)**
+### Step 1: **Freeze the Architecture (Do This First)** ✓
 
 Create ONE authoritative specification:
 
@@ -130,7 +130,7 @@ OUTPUT_DIM = 2
 - Latency: 81 cycles (M=3) vs 101 cycles (M=5)
 - Parameters: 1,362 (M=3) vs 1,554 (M=5)
 
-### Step 2: **Implement Phase Normalization Correctly**
+### Step 2: **Implement Phase Normalization Correctly** ✓
 
 ```python
 class PhaseNormalizedFeatureExtraction(nn.Module):
@@ -185,7 +185,7 @@ class PhaseNormalizedFeatureExtraction(nn.Module):
         return torch.stack(outputs, dim=1)
 ```
 
-### Step 3: **Fix Training Flow (Remove PADigitalTwin from Loop)**
+### Step 3: **Fix Training Flow (Remove PADigitalTwin from Loop)** ✓
 
 ```python
 def train_step_ila(generator, discriminator, batch, g_opt, d_opt, config):
@@ -221,7 +221,7 @@ def train_step_ila(generator, discriminator, batch, g_opt, d_opt, config):
     g_opt.step()
 ```
 
-### Step 4: **Create Single Authoritative Training Script**
+### Step 4: **Create Single Authoritative Training Script** ✓
 
 **Delete**: [BACKUP]training_colab.ipynb and the buggy second version.
 
@@ -245,7 +245,7 @@ def train_step_ila(generator, discriminator, batch, g_opt, d_opt, config):
 
 ## Immediate Action Items
 
-### Day 1: Consolidate
+### Day 1: Consolidate ✓
 
 1. **Delete** all backup/old notebooks
 2. **Create** `models/pn_tdnn_generator.py` with correct 24-dim phase-normalized features
