@@ -7,9 +7,9 @@
 # System Parameters
 # -----------------------------------------------------------------------------
 system:
-  sample_rate: 200000000           # 200 MHz sample rate (OpenDPD dataset)
-  target_rate: 400000000           # 400 MHz target for 6G (2× interpolation)
-  bandwidth: 4800000000             # 6G carrier bandwidth (4.4-4.8 GHz)
+  sample_rate: 800000000           # 800 MHz sample rate (dpa_200mhz dataset)
+  target_rate: 250000000           # 250 MHz target for 6G (2× interpolation)
+  bandwidth: 200000000             # 200 MHz channel bandwidth
   
 # -----------------------------------------------------------------------------
 # PA Parameters (GaN Digital Twin)
@@ -48,41 +48,38 @@ pa:
 # DPD Model Architecture (Memory-Aware TDNN)
 # -----------------------------------------------------------------------------
 model:
-  # Generator: Memory-Aware TDNN
+  # Generator: Phase-Normalized TDNN (PN-TDNN)
   generator:
-    type: "tdnn"               # Time-Delay Neural Network
-    memory_depth: 5            # Number of memory taps (M=5, so 6 total taps including current)
+    type: "pn-tdnn"            # Phase-Normalized Time-Delay Neural Network
+    memory_depth: 3            # M=3 (captures >95% GaN PA memory)
     
-    # Input structure (30-dimensional):
-    # - Current I, Q: 2 dims
-    # - Nonlinear envelope (|x|, |x|², |x|⁴) for 6 memory taps: 3×6 = 18 dims
-    # - Delayed I/Q from previous 5 taps: 2×5 = 10 dims
-    # Total input dim = 2 + 18 + 10 = 30
+    # Input structure (24-dimensional):
+    # 6 features (I, Q, |z|, |z|^2, |z|^3, phase) × 4 taps (M+1) = 24 dims
     input_dim: 24
     
-    # Network architecture (30 → 32 → 16 → 2)
-    hidden_dims: [32, 16]      # Hidden layer dimensions
+    # Network architecture (24 → 32 → 16 → 2)
+    hidden_dims: [32, 16]      # FC layers
     output_dim: 2              # I_dpd, Q_dpd
     
     # Activation functions
     hidden_activation: "leaky_relu"
     leaky_slope: 0.2
-    output_activation: "tanh"
+    output_activation: "linear"   # Linear output (phase denorm bounds naturally)
     
     # Regularization
     dropout: 0.0               # No dropout for inference
     batch_norm: false          # No BN for FPGA simplicity
     
-  # Discriminator: MLP Critic (CWGAN-GP)
+  # Discriminator: Conditional WGAN-GP Critic
   discriminator:
     type: "mlp"
-    input_dim: 4               # [I_real, Q_real, I_cond, Q_cond]
-    hidden_dims: [64, 32, 16]
+    input_dim: 4               # 2 (output) + 2 (condition)
+    hidden_dims: [64, 32]      # FC layers (matches notebook)
     output_dim: 1              # Wasserstein score
     
     hidden_activation: "leaky_relu"
     leaky_slope: 0.2
-    use_spectral_norm: true
+    use_spectral_norm: false   # Not used in CWGAN-GP
 
 # -----------------------------------------------------------------------------
 # Quantization (QAT - Quantization-Aware Training)
@@ -118,7 +115,7 @@ quantization:
 # -----------------------------------------------------------------------------
 training:
   # Basic settings
-  batch_size: 256
+  batch_size: 64               # Matches notebook configuration
   epochs: 500
   
   # Optimizer
@@ -126,25 +123,32 @@ training:
     type: "adam"
     lr_generator: 1e-4
     lr_discriminator: 1e-4
-    betas: [0.0, 0.9]          # WGAN-GP betas
+    betas: [0.0, 0.9]          # WGAN-GP: no momentum
     weight_decay: 1e-5
     
   # CWGAN-GP settings
-  n_critic: 5                  # Critic updates per generator update
+  n_critic: 5                  # Train D 5x per G update
   gp_weight: 10.0              # Gradient penalty weight
   
   # Loss weights
   loss:
-    adversarial: 1.0
-    reconstruction_l1: 50.0    # L1 reconstruction loss
-    spectral_evm: 20.0         # EVM spectral loss
-    spectral_acpr: 10.0        # ACPR spectral loss
+    adversarial: 1.0           # Wasserstein loss weight
+    reconstruction_l1: 50.0    # L1 loss weight
+    spectral: 10.0             # Spectral loss weight (combined EVM+ACPR)
     
   # Learning rate schedule
   scheduler:
     type: "cosine"
     min_lr: 1e-6
-    warmup_epochs: 10
+    warmup_epochs: 0           # No warmup (starts immediately)
+    
+  # Early stopping configuration
+  early_stopping:
+    enabled: true
+    patience: 25               # Stop if no improvement for 25 epochs
+    monitor: "val_evm_db"      # Metric to monitor
+    min_delta: 0.01            # Minimum improvement (0.01 dB for EVM)
+    restore_best_weights: true # Restore best model at end
     
   # Checkpointing
   checkpoint_interval: 25
@@ -153,17 +157,17 @@ training:
 
 # -----------------------------------------------------------------------------
 # Spectral Loss Configuration (EVM, ACLR, NMSE)
-# For dpa_200mhz: 1 channel, 10 sub-channels, 200 MSps
+# For dpa_200mhz: 1 channel, 10 sub-channels, 800 MSps
 # -----------------------------------------------------------------------------
 spectral_loss:
   # Main channel configuration
-  bw_main_ch: 200000000            # Main channel bandwidth 200 MHz (dpa_200mhz)
+  bw_main_ch: 200000000        # Main channel bandwidth 200 MHz (dpa_200mhz)
   
   # Sub-channel analysis
-  n_sub_ch: 10                 # Number of sub-channels for EVM/ACLR analysis (dpa_200mhz)
+  n_sub_ch: 10                 # 10 sub-channels for EVM/ACLR analysis (dpa_200mhz)
   
   # FFT parameters
-  nperseg: 1024                # FFT segment length for Welch PSD
+  nperseg: 2560                # FFT segment length for Welch PSD
   
   # Metrics thresholds
   targets:
@@ -173,26 +177,26 @@ spectral_loss:
 
 # -----------------------------------------------------------------------------
 # Dataset Configuration
-# Current: dpa_200mhz (1 channel, 10 sub-channels, 200 MSps)
+# Current: dpa_200mhz (1 channel, 10 sub-channels, 800 MSps)
 # Previous: apa_200mhz (5 channels, 1 sub-channel, 250 MSps)
 # -----------------------------------------------------------------------------
 dataset:
-  name: "dpa_200mhz"
-  n_channels: 1                # Single-channel dpa_200mhz
+  name: "DPA_200MHz"           # Dataset name (matches data directory)
+  n_channels: 1                # 1 channel for dpa_200mhz
   n_sub_channels: 10           # 10 frequency sub-channels
-  sample_rate: 200000000           # 200 MSps sampling
+  sample_rate: 800000000       # 800 MSps sampling
 
 # Data Configuration
 # 
 data:
-  # OpenDPD APA dataset
-  dataset_path: "data/raw/"
-  processed_path: "data/processed/"
+  # OpenDPD DPA dataset
+  dataset_path: "data/DPA_200MHz/raw/"
+  processed_path: "data/DPA_200MHz/processed/"
   
   # Data split
-  train_ratio: 0.8
-  val_ratio: 0.1
-  test_ratio: 0.1
+  train_ratio: 0.6
+  val_ratio: 0.2
+  test_ratio: 0.2
   
   # Normalization
   normalize: true
@@ -278,7 +282,7 @@ logging:
   log_interval: 100            # Log every N batches
   
 visualization:
-  plot_interval: 50            # Plot every N epochs
+  plot_interval: 10            # Plot every N epochs (matches notebook: every 10 epochs)
   metrics:
     - "evm"
     - "acpr"
