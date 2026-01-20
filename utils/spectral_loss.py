@@ -366,7 +366,7 @@ class SpectralLoss(nn.Module):
         adjacent_offset: float = 100e6,
         bw_main_ch: float = 200e6,
         n_sub_ch: int = 1,
-        nperseg: int = 19662,
+        nperseg: int = 2560,
         acpr_weight: float = 10.0,
         l1_weight: float = 50.0
     ):

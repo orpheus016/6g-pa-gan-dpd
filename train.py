@@ -393,6 +393,8 @@ def validate(
     
     all_evm = []
     all_nmse = []
+    all_aclr_lower = []
+    all_aclr_upper = []
     all_recon = []
     
     with torch.no_grad():
@@ -407,6 +409,8 @@ def validate(
             metrics = spectral_loss.compute_metrics(dpd_output, target)
             all_evm.append(metrics['evm_db'])
             all_nmse.append(metrics['nmse_db'])
+            all_aclr_lower.append(metrics['aclr_lower_db'])
+            all_aclr_upper.append(metrics['aclr_upper_db'])
             all_recon.append(metrics['l1_error'])
             
     generator.train()
@@ -414,6 +418,8 @@ def validate(
     return {
         'val_evm_db': np.mean(all_evm),
         'val_nmse_db': np.mean(all_nmse),
+        'val_aclr_lower_db': np.mean(all_aclr_lower),
+        'val_aclr_upper_db': np.mean(all_aclr_upper),
         'val_l1': np.mean(all_recon)
     }
 
@@ -573,10 +579,10 @@ def main():
     # Create loss functions
     # Note: WassersteinLoss imported from utils.spectral_loss
     spectral_loss = SpectralLoss(
-        sample_rate=config['system'].get('sample_rate', 200e6),
+        sample_rate=config['system'].get('sample_rate', 800e6),
         bw_main_ch=config.get('spectral_loss', {}).get('bw_main_ch', 200e6),
         n_sub_ch=config.get('spectral_loss', {}).get('n_sub_ch', 10),
-        nperseg=config.get('spectral_loss', {}).get('nperseg', 1024),
+        nperseg=config.get('spectral_loss', {}).get('nperseg', 2560),
     )
     
     # Resume from checkpoint

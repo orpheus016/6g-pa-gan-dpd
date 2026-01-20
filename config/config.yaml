@@ -16,7 +16,7 @@ system:
 # -----------------------------------------------------------------------------
 pa:
   type: "volterra"             # PA model type: volterra, saleh, rapp
-  memory_depth: 5              # Memory depth (taps)
+  memory_depth: 3              # Memory depth (taps)
   nonlinear_order: 7           # Nonlinearity order
   gain_db: 30                  # Small-signal gain (dB)
   p1db_dbm: 40                 # 1dB compression point (dBm)
@@ -58,7 +58,7 @@ model:
     # - Nonlinear envelope (|x|, |x|², |x|⁴) for 6 memory taps: 3×6 = 18 dims
     # - Delayed I/Q from previous 5 taps: 2×5 = 10 dims
     # Total input dim = 2 + 18 + 10 = 30
-    input_dim: 30
+    input_dim: 24
     
     # Network architecture (30 → 32 → 16 → 2)
     hidden_dims: [32, 16]      # Hidden layer dimensions
@@ -110,7 +110,7 @@ quantization:
     
   # QAT schedule
   qat:
-    start_epoch: 50            # Start QAT after initial training
+    start_epoch: 300            # Start QAT after initial training
     warmup_epochs: 10          # Gradual quantization warmup
     
 # -----------------------------------------------------------------------------
