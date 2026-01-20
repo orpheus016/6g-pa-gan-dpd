@@ -407,6 +407,7 @@ class SpectralLoss(nn.Module):
         Returns:
             total_loss: Combined loss (or tuple with components if return_components)
         """
+        print(f"[SpectralLoss] predicted.shape: {predicted.shape}, target.shape: {target.shape}")
         losses = {}
         
         # L1 reconstruction loss (main training signal)
@@ -416,8 +417,14 @@ class SpectralLoss(nn.Module):
         # Simple power-based regularization loss
         # Encourages predicted signal to have similar energy distribution as target
         # This is differentiable and doesn't require FFT
-        pred_power = (predicted ** 2).mean(dim=[1, 2])  # Average power per batch
-        target_power = (target ** 2).mean(dim=[1, 2])
+        if predicted.dim() == 3:
+            pred_power = (predicted ** 2).mean(dim=[1, 2])
+            target_power = (target ** 2).mean(dim=[1, 2])
+        elif predicted.dim() == 2:
+            pred_power = (predicted ** 2).mean(dim=1)
+            target_power = (target ** 2).mean(dim=1)
+        else:
+            raise ValueError(f"Unexpected tensor shape for predicted: {predicted.shape}")
         power_loss = torch.nn.functional.mse_loss(pred_power, target_power)
         losses['power'] = power_loss
         
