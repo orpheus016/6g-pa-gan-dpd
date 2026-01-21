@@ -297,6 +297,70 @@ def compute_nmse(
     return nmse
 
 
+def compute_nmse_differentiable(
+    predicted: torch.Tensor,
+    target: torch.Tensor,
+    return_db: bool = True
+) -> torch.Tensor:
+    """
+    Compute Normalized Mean Square Error (NMSE) - DIFFERENTIABLE PyTorch version.
+    
+    Works on any batch/sequence shape [batch, 2] or [batch, seq, 2].
+    Fully differentiable for gradient-based optimization.
+    
+    NMSE = MSE / energy where:
+    - MSE = mean((I_true - I_hat)^2 + (Q_true - Q_hat)^2)
+    - energy = mean(I_true^2 + Q_true^2)
+    
+    Args:
+        predicted: Predicted IQ signal [batch, seq, 2] or [batch, 2] (PyTorch tensor)
+        target: Target IQ signal [batch, seq, 2] or [batch, 2] (PyTorch tensor)
+        return_db: Return in dB (default) or linear
+        
+    Returns:
+        NMSE value (differentiable tensor, scalar or per-batch)
+    """
+    # Ensure tensors are on the same device
+    assert predicted.device == target.device, "predicted and target must be on same device"
+    
+    # Extract I and Q components
+    if predicted.dim() == 3:
+        # Shape: [batch, seq, 2]
+        pred_i = predicted[..., 0]  # [batch, seq]
+        pred_q = predicted[..., 1]  # [batch, seq]
+        target_i = target[..., 0]   # [batch, seq]
+        target_q = target[..., 1]   # [batch, seq]
+    elif predicted.dim() == 2:
+        # Shape: [batch, 2]
+        pred_i = predicted[:, 0]    # [batch]
+        pred_q = predicted[:, 1]    # [batch]
+        target_i = target[:, 0]     # [batch]
+        target_q = target[:, 1]     # [batch]
+    else:
+        raise ValueError(f"Unexpected tensor shape for predicted: {predicted.shape}")
+    
+    # Calculate MSE (mean squared error)
+    # MSE = mean((I_true - I_hat)^2 + (Q_true - Q_hat)^2) over all samples
+    mse = torch.mean((target_i - pred_i) ** 2 + (target_q - pred_q) ** 2)
+    
+    # Calculate energy (signal power)
+    # energy = mean(I_true^2 + Q_true^2) over all samples
+    energy = torch.mean(target_i ** 2 + target_q ** 2)
+    
+    # Avoid division by zero
+    energy = torch.clamp(energy, min=1e-10)
+    
+    # Calculate NMSE (normalized MSE)
+    nmse = mse / energy
+    
+    if return_db:
+        # Convert to dB: 10 * log10(NMSE)
+        nmse_db = 10.0 * torch.log10(nmse + 1e-10)
+        return nmse_db
+    
+    return nmse
+
+
 def get_amplitude(IQ_signal: np.ndarray) -> np.ndarray:
     """
     Get amplitude (magnitude) from IQ signal.
@@ -359,6 +423,8 @@ class SpectralLoss(nn.Module):
         acpr_weight: Weight for ACPR loss
         l1_weight: Weight for L1 reconstruction loss
     """
+    # MODIFY SpectralLoss.__init__() - ADD nmse_weight parameter
+
     def __init__(
         self,
         sample_rate: float = 250e6,
@@ -367,8 +433,9 @@ class SpectralLoss(nn.Module):
         bw_main_ch: float = 200e6,
         n_sub_ch: int = 1,
         nperseg: int = 2560,
-        acpr_weight: float = 10.0,
-        l1_weight: float = 50.0
+        l1_weight: float = 50.0,
+        power_weight: float = 10.0,      # Reduced from acpr_weight
+        nmse_weight: float = 10.0        # NEW: NMSE loss weight
     ):
         super().__init__()
         
@@ -383,11 +450,14 @@ class SpectralLoss(nn.Module):
         self.nperseg = nperseg
         
         # Loss weights
-        self.acpr_weight = acpr_weight
-        self.l1_weight = l1_weight
+        self.l1_weight = l1_weight              # L1 reconstruction: 50.0
+        self.power_weight = power_weight        # Power regularization: 10.0 (reduced)
+        self.nmse_weight = nmse_weight          # NMSE loss: 10.0 (NEW)
         
         self.l1_loss = nn.L1Loss()
         
+    # MODIFY SpectralLoss.forward() - ADD NMSE loss computation
+
     def forward(
         self,
         predicted: torch.Tensor,
@@ -395,28 +465,22 @@ class SpectralLoss(nn.Module):
         return_components: bool = False
     ) -> torch.Tensor:
         """
-        Compute combined spectral loss for training.
+        Compute combined spectral loss for training with differentiable NMSE.
         
-        Uses differentiable PyTorch functions.
-        
-        Args:
-            predicted: Predicted/generated signal [batch, seq, 2]
-            target: Target/reference signal [batch, seq, 2]
-            return_components: Also return individual loss components
-            
-        Returns:
-            total_loss: Combined loss (or tuple with components if return_components)
+        Loss = L1_weight * L1 + power_weight * power + nmse_weight * NMSE_dB
         """
-        print(f"[SpectralLoss] predicted.shape: {predicted.shape}, target.shape: {target.shape}")
         losses = {}
         
-        # L1 reconstruction loss (main training signal)
+        # ===== SHAPE FIX: Squeeze if needed =====
+        # Generator might output [B, 1, 2] for M=3, need [B, 2]
+        if predicted.dim() == 3 and predicted.shape[1] == 1:
+            predicted = predicted.squeeze(1)  # [B, 1, 2] → [B, 2]
+        
+        # ===== L1 Reconstruction Loss =====
         l1 = self.l1_loss(predicted, target)
         losses['l1'] = l1
         
-        # Simple power-based regularization loss
-        # Encourages predicted signal to have similar energy distribution as target
-        # This is differentiable and doesn't require FFT
+        # ===== Power Regularization Loss =====
         if predicted.dim() == 3:
             pred_power = (predicted ** 2).mean(dim=[1, 2])
             target_power = (target ** 2).mean(dim=[1, 2])
@@ -424,16 +488,25 @@ class SpectralLoss(nn.Module):
             pred_power = (predicted ** 2).mean(dim=1)
             target_power = (target ** 2).mean(dim=1)
         else:
-            raise ValueError(f"Unexpected tensor shape for predicted: {predicted.shape}")
+            raise ValueError(f"Unexpected tensor shape: {predicted.shape}")
+        
         power_loss = torch.nn.functional.mse_loss(pred_power, target_power)
         losses['power'] = power_loss
         
-        # Combine losses
-        # During training: L1 is primary, power regularization helps stability
-        total = self.l1_weight * l1 + self.acpr_weight * power_loss
+        # ===== Differentiable NMSE Loss =====
+        nmse_loss = compute_nmse_differentiable(predicted, target, return_db=True)
+        losses['nmse'] = nmse_loss
+        
+        # ===== Combined Loss =====
+        total = (
+            self.l1_weight * l1 + 
+            self.power_weight * power_loss + 
+            self.nmse_weight * nmse_loss
+        )
         
         if return_components:
             return total, losses
+        
         return total
     
     def compute_metrics(
