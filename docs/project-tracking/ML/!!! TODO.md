@@ -48,22 +48,26 @@
     - [ ] Implement MAE loss in train_step for generator
     - [ ] Compare training curves and final metrics (EVM, ACPR, NMSE) between MSE and MAE
     - [ ] Analyze which loss yields better DPD performance in practice
-- [ ] **!!!!! Implement FLA training with surrogate PA model as an alternative to ILA—this has been shown to achieve -60 dBc ACLR with similar model sizes (see TCN-DPD, OpenDPDv2)** {**TBA LATER**}
+- [✓] **!!!!! Implement FLA training with surrogate PA model as an alternative to ILA—this has been shown to achieve -60 dBc ACLR with similar model sizes (see TCN-DPD, OpenDPDv2)** {**TBA LATER**}
     - [✓] Stage 1: Train a PA surrogate model (PNTDNN) to predict PA output from DPD input.
     - [✓] Stage 2: Freeze PA model, train DPD to minimize error after PA.
-    - [ ] Compare final metrics (EVM, ACPR, NMSE) against ILA-trained model.
-    - [ ] Analyze trade-offs in training complexity and performance.
+    - [✓] Compare final metrics (EVM, ACPR, NMSE) against ILA-trained model.
+    - [✓] Analyze trade-offs in training complexity and performance.
 - [ ] Update documentation (ARCHITECTURE.md) to reflect actual implementation in train.py and training_colab_v2.ipynb {**TBA LATER**}
 - [✓] Implement longer sequence implementation with large batch size (e.g., [batch, seq_len, 2] with seq_len ≫ 2) to enable differentiable spectral losses (ACLR, EVM) that directly optimize for RF metrics—this is proven to yield much better real-world DPD (see Mediatek-PAN-DPD, OpenDPDv2, SparseDPD) {**TBA LATER**}
     - [✓] Rewrite dataloader to yield long, contiguous windows (not just random pairs). This may require careful handling of sequence boundaries and shuffling.
     - [✓] Adapt model to process sequences, not just single samples.
     - [✓] Tune hyperparameters for gradient stability with frequency-domain losses (see Mediatek-PAN-DPD, Section V).
-    - [ ] Ablation study: Compare performance with/without differentiable spectral losses.
+    - [✓] Ablation study: Compare performance with/without differentiable spectral losses.
     - [✓] Monitor memory usage and training speed trade-offs.
 - [ ] Enable ablation study on different loss function components to understand their impact on performance {**TBA LATER**}
     - [ ] Remove each loss component (L1, spectral, WGAN-GP) one at a time, measure degradation in EVM, ACPR, NMSE.
     - [✓] Add frequency-domain mask loss (fMask) if regulatory mask is violated despite good ACPR.
     - [✓] Add differentiable EVM loss if EVM specifically lags while ACPR is fine.
+
+--- 22-01-2026 ---
+- [ ] Check MODEL-ANALYSIS.md number 3 and 4 (change the numbers (loss config iirc on ipynb) and train)
+- [ ] Check CURRENT-STATE.md considering FLA Train
 
 ---
 - [✓] Check Mediatek Paper for more maths on the adversarial system for DPD
