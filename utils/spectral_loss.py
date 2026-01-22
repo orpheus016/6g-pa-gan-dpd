@@ -433,9 +433,9 @@ class SpectralLoss(nn.Module):
         bw_main_ch: float = 200e6,
         n_sub_ch: int = 1,
         nperseg: int = 2560,
-        l1_weight: float = 50.0,
-        power_weight: float = 10.0,      # Reduced from acpr_weight
-        nmse_weight: float = 10.0        # NEW: NMSE loss weight
+        l1_weight: float = 1.0,
+        power_weight: float = 2.0,      # Reduced from acpr_weight
+        nmse_weight: float = 5.0        # NEW: NMSE loss weight
     ):
         super().__init__()
         
