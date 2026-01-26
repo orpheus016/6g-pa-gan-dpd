@@ -715,11 +715,31 @@ def main():
     print(f"Batch size: {batch_size}")
     print(f"Learning rate: {config['training']['optimizer'].get('lr_generator', 1e-4)}")
     print(f"Target NMSE: < -42 dB")
+    qat_start_epoch = config.get('quantization', {}).get('qat', {}).get('start_epoch', 300)
+    print(f"QAT scheduled to start at epoch {qat_start_epoch}")
     print(f"{'='*70}\n")
     
     global_step = start_epoch * len(train_loader)
+    qat_enabled = False
     
     for epoch in range(start_epoch, num_epochs):
+        # Two-stage training: FP32 baseline (0-{qat_start_epoch-1}) then QAT fine-tuning ({qat_start_epoch}+)
+        if epoch == qat_start_epoch and not qat_enabled:
+            print(f"\n*** QAT Transition at Epoch {epoch} ***")
+            # Load best FP32 checkpoint before enabling QAT
+            best_checkpoint_path = checkpoint_dir / 'best.pth'
+            if best_checkpoint_path.exists():
+                print(f"Loading best FP32 checkpoint from {best_checkpoint_path}")
+                best_ckpt = torch.load(best_checkpoint_path, map_location=device)
+                generator.load_state_dict(best_ckpt['generator_state_dict'])
+                print(f"Restored best model weights (NMSE: {best_ckpt['best_nmse']:.2f} dB)")
+            else:
+                print("Warning: best.pth not found, continuing with current weights")
+            # Enable QAT on restored weights
+            print("Enabling QAT: Q1.15 weights, Q8.8 activations")
+            generator.enable_qat()
+            qat_enabled = True
+        
         generator.train()
         discriminator.train()
         
@@ -783,7 +803,7 @@ def main():
         avg_g_loss = np.mean(epoch_losses['g_total'])
         avg_fla_loss = np.mean(epoch_losses['g_fla_mse'])
         
-        print(f"\nEpoch {epoch+1}/{num_epochs}:")
+        print(f"\nEpoch {epoch+1}/{num_epochs} {'[QAT FINE-TUNING]' if qat_enabled else '[FP32 BASELINE]'}:")
         print(f"  Train: G_total={avg_g_loss:.4f}, FLA_MSE={avg_fla_loss:.6f}")
         print(f"  Val:   NMSE={val_metrics['val_nmse_db']:.2f} dB, "
               f"EVM={val_metrics['val_evm_db']:.2f} dB, "

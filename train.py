@@ -641,9 +641,29 @@ def main():
     
     # Training loop
     print(f"\nStarting training for {num_epochs} epochs...")
+    qat_start_epoch = config.get('quantization', {}).get('qat', {}).get('start_epoch', 300)
+    qat_enabled = False
+    print(f"QAT scheduled to start at epoch {qat_start_epoch}")
     global_step = start_epoch * len(train_loader)
     
     for epoch in range(start_epoch, num_epochs):
+        # Two-stage training: FP32 baseline (0-{qat_start_epoch-1}) then QAT fine-tuning ({qat_start_epoch}+)
+        if epoch == qat_start_epoch and not qat_enabled:
+            print(f"\n*** QAT Transition at Epoch {epoch} ***")
+            # Load best FP32 checkpoint before enabling QAT
+            best_checkpoint_path = output_dir / 'best.pth'
+            if best_checkpoint_path.exists():
+                print(f"Loading best FP32 checkpoint from {best_checkpoint_path}")
+                best_ckpt = torch.load(best_checkpoint_path, map_location=device)
+                generator.load_state_dict(best_ckpt['generator_state_dict'])
+                print(f"Restored best model weights (EVM: {best_ckpt['best_evm']:.2f} dB)")
+            else:
+                print("Warning: best.pth not found, continuing with current weights")
+            # Enable QAT on restored weights
+            print("Enabling QAT: Q1.15 weights, Q8.8 activations")
+            generator.enable_qat()
+            qat_enabled = True
+        
         generator.train()
         discriminator.train()
         
@@ -705,7 +725,7 @@ def main():
         )
         
         # Print epoch summary
-        print(f"\nEpoch {epoch+1}/{num_epochs}")
+        print(f"\nEpoch {epoch+1}/{num_epochs} {'[QAT FINE-TUNING]' if qat_enabled else '[FP32 BASELINE]'}")
         print(f"  G Loss: {epoch_losses['g_total']:.4f}")
         print(f"  D Loss: {epoch_losses['d_d_loss']:.4f}")
         print(f"  Val EVM: {val_metrics['val_evm_db']:.2f} dB")
