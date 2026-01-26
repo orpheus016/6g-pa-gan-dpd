@@ -58,18 +58,11 @@ from utils.dataset_sequence import create_fla_dataset_sequence, create_dataloade
 # =============================================================================
 
 class PAModelDGRU(nn.Module):
-    """
-    DGRU-based PA surrogate model (matches OpenDPD architecture).
-    
-    Learns to predict: u_PA (clean input) → y_PA (distorted output)
-    Uses GRU to capture temporal memory effects in PA.
-    """
+    """DGRU-based PA surrogate model for sequence training."""
     def __init__(self, input_size=2, hidden_size=64, num_layers=2):
         super().__init__()
         self.hidden_size = hidden_size
         self.num_layers = num_layers
-        self.input_size = input_size
-        
         self.gru = nn.GRU(
             input_size=input_size,
             hidden_size=hidden_size,
@@ -77,17 +70,29 @@ class PAModelDGRU(nn.Module):
             batch_first=True,
             dropout=0.1 if num_layers > 1 else 0
         )
-        
         self.fc_out = nn.Linear(hidden_size, 2)
         self.num_params = sum(p.numel() for p in self.parameters())
     
     def forward(self, x):
-        """Forward pass: u_PA → y_PA"""
+        """
+        Forward pass: u_PA (sequence) → y_PA (sequence)
+        
+        Args:
+            x: [batch, seq_len, 2] or [batch, 2]
+        Returns:
+            y: [batch, seq_len, 2] or [batch, 2]
+        """
         if x.dim() == 2:
-            x = x.unsqueeze(1)
-        out, _ = self.gru(x)
-        out = self.fc_out(out[:, -1, :])
-        return out
+            # Single sample
+            x = x.unsqueeze(1)  # [batch, 2] → [batch, 1, 2]
+            out, _ = self.gru(x)
+            out = self.fc_out(out[:, -1, :])  # [batch, 2]
+            return out
+        else:
+            # Sequence [batch, seq_len, 2]
+            out, _ = self.gru(x)  # [batch, seq_len, hidden_size]
+            out = self.fc_out(out)  # [batch, seq_len, 2] ← SEQUENCE OUTPUT!
+            return out
 
 
 # =============================================================================
