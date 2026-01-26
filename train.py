@@ -580,9 +580,9 @@ def main():
     
     # Create sequence-based datasets for proper spectral training
     memory_depth = config['model'].get('generator', {}).get('memory_depth', 3)
-    seq_length = config.get('spectral_loss', {}).get('nperseg', 2560)
-    stride = seq_length // 2  # 50% overlap
-    batch_size = config['training'].get('batch_size', 8)  # Fewer but larger sequences
+    seq_length = 500
+    stride = 1
+    batch_size = 32
     
     # Load validation data (always use normal temperature)
     u_pa_val, y_pa_val = load_measured_data(data_dir, 'val')

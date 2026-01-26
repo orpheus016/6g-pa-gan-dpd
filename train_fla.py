@@ -645,9 +645,9 @@ def main():
     
     # Create sequence-based datasets for proper spectral training
     memory_depth = config['model']['generator'].get('memory_depth', 3)
-    seq_length = config.get('spectral_loss', {}).get('nperseg', 2560)
-    stride = seq_length // 2  # 50% overlap
-    batch_size = config['training'].get('batch_size', 8)  # Fewer but larger sequences
+    seq_length = 500
+    stride = 1
+    batch_size = 32
     
     # Create dataloaders using sequence-based dataset
     train_loader, val_loader, _ = create_dataloaders(
