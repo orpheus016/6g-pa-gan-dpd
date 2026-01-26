@@ -39,7 +39,8 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).parent))
 
 from models import PNTDNNGenerator, create_discriminator
-from utils.spectral_loss import SpectralLoss
+from utils.spectral_loss import SpectralLoss, compute_nmse, compute_evm, compute_aclr
+from utils.dataset_sequence import create_dpd_dataset_sequence, create_dataloaders
 
 
 def load_config(config_path: str) -> dict:
@@ -123,54 +124,29 @@ def apply_thermal_drift(y_pa: np.ndarray, temperature: float, reference_temp: fl
     return y_thermal
 
 
+# Legacy function kept for backward compatibility - use create_dpd_dataset_sequence instead
 def create_dpd_dataset(u_pa: np.ndarray, y_pa: np.ndarray, memory_depth: int = 3, 
                        seq_length: int = 64) -> TensorDataset:
-    """Create dataset for DPD training using Indirect Learning Architecture.
+    """DEPRECATED: Use create_dpd_dataset_sequence for proper spectral training.
     
-    ILA: Train DPD as post-inverse: DPD(y_PA) ≈ u_PA
-    Then use same function as pre-inverse in deployment.
-    
-    PNTDNNGenerator handles phase-normalized feature extraction internally,
-    so we return raw IQ sequences. Generator will extract 24-dim features.
-    
-    Args:
-        u_pa: PA input (target for DPD)
-        y_pa: PA output (input to DPD)
-        memory_depth: Number of memory taps (default M=3 for PN-TDNN)
-        seq_length: Sequence length for batching
-    
-    Returns:
-        TensorDataset with (raw_iq_sequence, target_iq) pairs
+    This sample-by-sample approach cannot compute valid ACLR/EVM metrics.
+    Keeping for backward compatibility only.
     """
-    # Create sliding windows of IQ sequences
-    # Input: raw IQ samples from PA output (DPD input)
-    # Target: IQ samples from PA input (what DPD should produce)
+    print("WARNING: Using deprecated sample-by-sample dataset. Use create_dpd_dataset_sequence instead.")
     num_samples = len(y_pa) - memory_depth
-    
-    # Sequences: [batch, seq_len, 2] where seq_len >= memory_depth + 1
-    # For each output, we need memory_depth past samples + current sample
     inputs = np.zeros((num_samples, memory_depth + 1, 2), dtype=np.float32)
     targets = np.zeros((num_samples, 2), dtype=np.float32)
     
     for i in range(num_samples):
-        # Memory taps from PA output (IQ samples in time order)
         for m in range(memory_depth + 1):
             idx = i + memory_depth - m
             inputs[i, m, 0] = y_pa[idx].real
             inputs[i, m, 1] = y_pa[idx].imag
-        
-        # Target is PA input (what DPD should produce to cancel distortion)
         target_idx = i + memory_depth
         targets[i, 0] = u_pa[target_idx].real
         targets[i, 1] = u_pa[target_idx].imag
     
-    # Convert to torch tensors
-    # inputs: [batch, memory_depth+1, 2] - raw IQ sequences
-    # targets: [batch, 2] - target IQ samples
-    inputs_t = torch.from_numpy(inputs)
-    targets_t = torch.from_numpy(targets)
-    
-    return TensorDataset(inputs_t, targets_t)
+    return TensorDataset(torch.from_numpy(inputs), torch.from_numpy(targets))
 
 
 def create_models(config: dict, device: torch.device, qat: bool = False):
@@ -263,17 +239,19 @@ def train_step(
     spectral_loss: SpectralLoss,
     config: dict,
     device: torch.device,
-    step: int
+    step: int,
+    memory_depth: int = 3
 ) -> Dict[str, float]:
     """
     Single training step using Indirect Learning Architecture (ILA).
     
-    In ILA:
-    - Input: PA output (distorted signal y_PA)
-    - Generator produces: Predistorted signal (should match clean PA input u_PA)
-    - Target: PA input (clean signal u_PA)
+    Sequence-based training: processes [B, seq_length, 2] sequences.
+    Generator output: [B, seq_length - M, 2] (trimmed due to memory effects).
     
-    NO PA model in training loop - we train on measured data!
+    In ILA:
+    - Input: PA output sequences (distorted signal y_PA)
+    - Generator produces: Predistorted sequences (should match clean PA input u_PA)
+    - Target: PA input sequences (clean signal u_PA)
     
     Returns dictionary of loss values.
     """
@@ -282,10 +260,13 @@ def train_step(
     n_critic = train_config.get('n_critic', 5)
     gp_weight = train_config.get('gp_weight', 10.0)
     
-    # Unpack batch
-    input_seq, target = batch  # [B, M+1, 2], [B, 2]
-    input_seq = input_seq.to(device)
-    target = target.to(device)
+    # Unpack batch: [B, seq_length, 2] for sequence-based training
+    input_seq, target_seq = batch
+    input_seq = input_seq.to(device)   # [B, seq_length, 2]
+    target_seq = target_seq.to(device) # [B, seq_length, 2]
+    
+    batch_size = input_seq.size(0)
+    seq_length = input_seq.size(1)
     
     losses = {}
     
@@ -295,27 +276,33 @@ def train_step(
     for _ in range(n_critic):
         d_optimizer.zero_grad()
         
-        # Generate DPD output (detach to prevent gradient flow)
+        # Generate DPD output on full sequences
         with torch.no_grad():
-            dpd_output = generator(input_seq)  # [B, 2]
-            
-        # Discriminator loss components
-        # Real: clean PA input (what DPD should produce)
-        # Fake: DPD output (what DPD actually produces)
-        # Condition: Current PA output sample (what DPD saw)
-        condition = input_seq[:, -1, :]  # [B, 2] - most recent sample
+            dpd_output = generator(input_seq)  # [B, seq_length - M, 2]
+        
+        output_len = dpd_output.size(1)
+        
+        # Trim target to match output length (due to memory effects)
+        target_trimmed = target_seq[:, memory_depth:memory_depth + output_len, :]
+        
+        # For discriminator: sample random time indices from sequences
+        # This maintains batch independence while using sequence data
+        rand_idx = torch.randint(0, output_len, (batch_size,), device=device)
+        
+        dpd_sample = dpd_output[torch.arange(batch_size), rand_idx, :]  # [B, 2]
+        target_sample = target_trimmed[torch.arange(batch_size), rand_idx, :]  # [B, 2]
+        condition = input_seq[torch.arange(batch_size), memory_depth + rand_idx, :]  # [B, 2]
         
         # Critic scores
-        d_real = discriminator(target, condition)  # [B, 1]
-        d_fake = discriminator(dpd_output.detach(), condition)  # [B, 1]
+        d_real = discriminator(target_sample, condition)
+        d_fake = discriminator(dpd_sample.detach(), condition)
         
-        # Wasserstein loss: maximize D(real) - D(fake)
+        # Wasserstein loss
         d_loss = d_fake.mean() - d_real.mean()
         
-        # Gradient penalty: enforce 1-Lipschitz constraint
-        batch_size = target.size(0)
+        # Gradient penalty
         alpha = torch.rand(batch_size, 1, device=device)
-        interpolates = alpha * target + (1 - alpha) * dpd_output.detach()
+        interpolates = alpha * target_sample + (1 - alpha) * dpd_sample.detach()
         interpolates.requires_grad_(True)
         
         d_interp = discriminator(interpolates, condition)
@@ -334,37 +321,50 @@ def train_step(
         d_total = d_loss + gp_weight * gp
         d_total.backward()
         d_optimizer.step()
-        
+    
     losses['d_wasserstein'] = d_loss.item()
     losses['d_gp'] = gp.item()
     losses['d_total'] = d_total.item()
+    losses['d_d_loss'] = d_loss.item()  # For backward compat with logging
     
     # =================
     # Train Generator
     # =================
     g_optimizer.zero_grad()
     
-    # Generate DPD output
-    dpd_output = generator(input_seq)  # [B, 2]
+    # Generate DPD output on full sequences
+    dpd_output = generator(input_seq)  # [B, seq_length - M, 2]
+    output_len = dpd_output.size(1)
     
-    # Adversarial loss: fool discriminator
-    d_fake = discriminator(dpd_output, condition)  # [B, 1]
-    g_adv_loss = -d_fake.mean()  # Minimize -D(fake) = maximize D(fake)
+    # Trim target to match output length
+    target_trimmed = target_seq[:, memory_depth:memory_depth + output_len, :]
     
-    # Reconstruction loss (L1: DPD output should match PA input)
-    recon_loss = nn.functional.l1_loss(dpd_output, target)
+    # Adversarial loss: sample from sequences
+    rand_idx = torch.randint(0, output_len, (batch_size,), device=device)
+    dpd_sample = dpd_output[torch.arange(batch_size), rand_idx, :]
+    condition = input_seq[torch.arange(batch_size), memory_depth + rand_idx, :]
     
-    # Spectral loss (ACPR, EVM, NMSE)
-    spectral, spectral_components = spectral_loss(dpd_output, target, return_components=True)
+    d_fake = discriminator(dpd_sample, condition)
+    g_adv_loss = -d_fake.mean()
     
-    # Combined generator loss with weighted components
+    # Reconstruction loss (L1: DPD output should match PA input) - on full sequences
+    recon_loss = nn.functional.l1_loss(dpd_output, target_trimmed)
+    
+    # Spectral loss on full sequences (now valid with seq_length >= nperseg)
+    spectral, spectral_components = spectral_loss(dpd_output, target_trimmed, return_components=True)
+    
+    # Combined generator loss
     g_total = (
         loss_config.get('adversarial', 1.0) * g_adv_loss +
-        loss_config.get('reconstruction_l1', 50.0) * recon_loss +
+        loss_config.get('reconstruction_l1', 40.0) * recon_loss +
         loss_config.get('spectral', 10.0) * spectral
     )
     
     g_total.backward()
+    
+    # Gradient clipping for stability
+    torch.nn.utils.clip_grad_norm_(generator.parameters(), max_norm=1.0)
+    
     g_optimizer.step()
     
     losses['g_adv'] = g_adv_loss.item()
@@ -380,47 +380,77 @@ def validate(
     generator: nn.Module,
     val_loader: DataLoader,
     spectral_loss: SpectralLoss,
-    device: torch.device
+    device: torch.device,
+    memory_depth: int = 3
 ) -> Dict[str, float]:
-    """Validate model on validation set.
+    """Validate model on validation set using sequence-based metrics.
     
     In ILA validation:
-    - Input: PA output (distorted)
-    - DPD output: Should match PA input (clean)
-    - Metrics: EVM, NMSE, L1 between DPD output and clean PA input
+    - Input: PA output sequences (distorted)
+    - DPD output: Should match PA input sequences (clean)
+    - Metrics: EVM, NMSE, ACLR computed per-sequence (now valid)
     """
     generator.eval()
     
+    all_preds = []
+    all_targets = []
+    
+    with torch.no_grad():
+        for input_seq, target_seq in val_loader:
+            input_seq = input_seq.to(device)
+            target_seq = target_seq.to(device)
+            
+            # Generate DPD output
+            dpd_output = generator(input_seq)  # [B, seq_length - M, 2]
+            output_len = dpd_output.size(1)
+            
+            # Trim target to match output length
+            target_trimmed = target_seq[:, memory_depth:memory_depth + output_len, :]
+            
+            all_preds.append(dpd_output.cpu())
+            all_targets.append(target_trimmed.cpu())
+    
+    generator.train()
+    
+    # Aggregate all predictions
+    all_preds = torch.cat(all_preds, dim=0).numpy()    # [N, seq_len, 2]
+    all_targets = torch.cat(all_targets, dim=0).numpy()
+    
+    # Compute metrics per sequence (each sequence is valid for Welch)
     all_evm = []
     all_nmse = []
     all_aclr_lower = []
     all_aclr_upper = []
-    all_recon = []
     
-    with torch.no_grad():
-        for input_seq, target in val_loader:
-            input_seq = input_seq.to(device)
-            target = target.to(device)
-            
-            # Generate DPD output
-            dpd_output = generator(input_seq)
-            
-            # Compute metrics (DPD output vs clean PA input)
-            metrics = spectral_loss.compute_metrics(dpd_output, target)
-            all_evm.append(metrics['evm_db'])
-            all_nmse.append(metrics['nmse_db'])
-            all_aclr_lower.append(metrics['aclr_lower_db'])
-            all_aclr_upper.append(metrics['aclr_upper_db'])
-            all_recon.append(metrics['l1_error'])
-            
-    generator.train()
+    for i in range(len(all_preds)):
+        pred = all_preds[i]    # [seq_len, 2]
+        tgt = all_targets[i]   # [seq_len, 2]
+        
+        # NMSE (time-domain)
+        nmse = compute_nmse(pred, tgt, return_db=True)
+        all_nmse.append(nmse)
+        
+        # EVM (frequency-domain per subchannel)
+        evm = compute_evm(pred, tgt, return_db=True)
+        all_evm.append(evm)
+        
+        # ACLR (Welch PSD based)
+        try:
+            aclr_lower, aclr_upper = compute_aclr(pred, tgt, return_db=True)
+            all_aclr_lower.append(aclr_lower)
+            all_aclr_upper.append(aclr_upper)
+        except:
+            pass  # Skip if sequence too short
+    
+    # Compute L1 error
+    l1_error = np.mean(np.abs(all_preds - all_targets))
     
     return {
-        'val_evm_db': np.mean(all_evm),
-        'val_nmse_db': np.mean(all_nmse),
-        'val_aclr_lower_db': np.mean(all_aclr_lower),
-        'val_aclr_upper_db': np.mean(all_aclr_upper),
-        'val_l1': np.mean(all_recon)
+        'val_evm_db': np.mean(all_evm) if all_evm else 0.0,
+        'val_nmse_db': np.mean(all_nmse) if all_nmse else 0.0,
+        'val_aclr_lower_db': np.mean(all_aclr_lower) if all_aclr_lower else 0.0,
+        'val_aclr_upper_db': np.mean(all_aclr_upper) if all_aclr_upper else 0.0,
+        'val_l1': l1_error
     }
 
 
@@ -548,28 +578,31 @@ def main():
     else:  # normal
         print("  Using normal temperature (25°C)")
     
-    # Create datasets
-    # Default: M=3 for PN-TDNN (matches ARCHITECTURE.md)
+    # Create sequence-based datasets for proper spectral training
     memory_depth = config['model'].get('generator', {}).get('memory_depth', 3)
-    train_dataset = create_dpd_dataset(u_pa_train, y_pa_train, memory_depth)
+    seq_length = config.get('spectral_loss', {}).get('nperseg', 2560)
+    stride = seq_length // 2  # 50% overlap
+    batch_size = config['training'].get('batch_size', 8)  # Fewer but larger sequences
     
     # Load validation data (always use normal temperature)
     u_pa_val, y_pa_val = load_measured_data(data_dir, 'val')
-    val_dataset = create_dpd_dataset(u_pa_val, y_pa_val, memory_depth)
     
-    batch_size = config['training'].get('batch_size', 64)
-    train_loader = DataLoader(
-        train_dataset, batch_size=batch_size, shuffle=True,
-        num_workers=4, pin_memory=True, drop_last=True
-    )
-    val_loader = DataLoader(
-        val_dataset, batch_size=batch_size, shuffle=False,
-        num_workers=4, pin_memory=True
+    # Create dataloaders using sequence-based dataset
+    train_loader, val_loader, _ = create_dataloaders(
+        u_pa_train, y_pa_train,
+        u_pa_val, y_pa_val,
+        batch_size=batch_size,
+        seq_length=seq_length,
+        stride=stride,
+        memory_depth=memory_depth,
+        mode='ila',
+        num_workers=0,  # Use 0 for Windows compatibility
+        pin_memory=True
     )
     
-    print(f"\nDataset sizes:")
-    print(f"  Training samples: {len(train_dataset):,}")
-    print(f"  Validation samples: {len(val_dataset):,}")
+    print(f"\nSequence-based training:")
+    print(f"  seq_length={seq_length}, stride={stride}")
+    print(f"  Frequency resolution: {800e6/seq_length/1e3:.1f} kHz (vs 200 MHz for sample-based)")
     
     # Create optimizers and schedulers
     g_optimizer, d_optimizer = create_optimizers(generator, discriminator, config)
@@ -583,6 +616,10 @@ def main():
         bw_main_ch=config.get('spectral_loss', {}).get('bw_main_ch', 200e6),
         n_sub_ch=config.get('spectral_loss', {}).get('n_sub_ch', 10),
         nperseg=config.get('spectral_loss', {}).get('nperseg', 2560),
+        l1_weight=50.0,
+        power_weight=10.0,
+        nmse_weight=10.0,
+        acpr_weight=20.0       # Frequency-domain spectral loss
     )
     
     # Resume from checkpoint
@@ -617,7 +654,8 @@ def main():
             losses = train_step(
                 generator, discriminator, batch,
                 g_optimizer, d_optimizer, spectral_loss,
-                config, device, global_step
+                config, device, global_step,
+                memory_depth=memory_depth
             )
             
             # Accumulate losses
@@ -643,7 +681,7 @@ def main():
             epoch_losses[k] /= len(train_loader)
             
         # Validation
-        val_metrics = validate(generator, val_loader, spectral_loss, device)
+        val_metrics = validate(generator, val_loader, spectral_loss, device, memory_depth)
         
         # Log validation metrics
         for k, v in val_metrics.items():

@@ -434,8 +434,9 @@ class SpectralLoss(nn.Module):
         n_sub_ch: int = 1,
         nperseg: int = 2560,
         l1_weight: float = 1.0,
-        power_weight: float = 2.0,      # Reduced from acpr_weight
-        nmse_weight: float = 5.0        # NEW: NMSE loss weight
+        power_weight: float = 2.0,
+        nmse_weight: float = 5.0,
+        acpr_weight: float = 10.0       # ACPR spectral loss weight
     ):
         super().__init__()
         
@@ -450,9 +451,10 @@ class SpectralLoss(nn.Module):
         self.nperseg = nperseg
         
         # Loss weights
-        self.l1_weight = l1_weight              # L1 reconstruction: 50.0
-        self.power_weight = power_weight        # Power regularization: 10.0 (reduced)
-        self.nmse_weight = nmse_weight          # NMSE loss: 10.0 (NEW)
+        self.l1_weight = l1_weight
+        self.power_weight = power_weight
+        self.nmse_weight = nmse_weight
+        self.acpr_weight = acpr_weight
         
         self.l1_loss = nn.L1Loss()
         
@@ -465,16 +467,13 @@ class SpectralLoss(nn.Module):
         return_components: bool = False
     ) -> torch.Tensor:
         """
-        Compute combined spectral loss for training with differentiable NMSE.
+        Compute combined spectral loss for training.
         
-        Loss = L1_weight * L1 + power_weight * power + nmse_weight * NMSE_dB
+        Loss = L1 * l1_weight + power * power_weight + NMSE * nmse_weight + ACPR * acpr_weight
+        
+        ACPR requires sequences [B, seq_len, 2] with seq_len >= nperseg for valid FFT.
         """
         losses = {}
-        
-        # ===== SHAPE FIX: Squeeze if needed =====
-        # Generator might output [B, 1, 2] for M=3, need [B, 2]
-        if predicted.dim() == 3 and predicted.shape[1] == 1:
-            predicted = predicted.squeeze(1)  # [B, 1, 2] → [B, 2]
         
         # ===== L1 Reconstruction Loss =====
         l1 = self.l1_loss(predicted, target)
@@ -497,11 +496,30 @@ class SpectralLoss(nn.Module):
         nmse_loss = compute_nmse_differentiable(predicted, target, return_db=True)
         losses['nmse'] = nmse_loss
         
+        # ===== ACPR Loss (Frequency-Domain) =====
+        # Only compute if we have sequences (dim=3)
+        if predicted.dim() == 3:
+            acpr_lower, acpr_upper = compute_acpr(
+                predicted, 
+                self.sample_rate, 
+                self.channel_bw, 
+                self.adjacent_offset,
+                return_db=True
+            )
+            # ACPR is negative (dB), want to minimize (make more negative)
+            # Loss = max(acpr_lower, acpr_upper) so gradient pushes both down
+            acpr_loss = torch.max(acpr_lower.mean(), acpr_upper.mean())
+            losses['acpr'] = acpr_loss
+        else:
+            acpr_loss = torch.tensor(0.0, device=predicted.device)
+            losses['acpr'] = acpr_loss
+        
         # ===== Combined Loss =====
         total = (
             self.l1_weight * l1 + 
             self.power_weight * power_loss + 
-            self.nmse_weight * nmse_loss
+            self.nmse_weight * nmse_loss +
+            self.acpr_weight * acpr_loss
         )
         
         if return_components:

@@ -50,6 +50,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from models import PNTDNNGenerator, create_discriminator
 from utils.spectral_loss import SpectralLoss, compute_nmse, compute_evm, compute_aclr
+from utils.dataset_sequence import create_fla_dataset_sequence, create_dataloaders
 
 
 # =============================================================================
@@ -174,40 +175,27 @@ def load_measured_data(data_dir: Path, split: str = 'train'):
     return u_pa, y_pa
 
 
+# Legacy function kept for backward compatibility - use create_fla_dataset_sequence instead
 def create_fla_dataset(u_pa: np.ndarray, y_pa: np.ndarray, memory_depth: int = 3) -> TensorDataset:
+    """DEPRECATED: Use create_fla_dataset_sequence for proper spectral training.
+    
+    This sample-by-sample approach cannot compute valid ACLR/EVM metrics.
+    Keeping for backward compatibility only.
     """
-    Create dataset for FLA DPD training.
-    
-    FLA: DPD(x) → PA → y_cas, minimize ||y_cas - y_target||
-    
-    - Input to DPD: u_pa (clean PA input, what we want to predistort)
-    - Target: y_pa (desired PA output after linearization)
-    
-    Note: In ideal FLA, target is the scaled, linear version of input.
-    Here we use measured PA output as the target for the cascaded model.
-    """
+    print("WARNING: Using deprecated sample-by-sample dataset. Use create_fla_dataset_sequence instead.")
     num_samples = len(u_pa) - memory_depth
-    
-    # Input: raw IQ sequences from PA input (what DPD sees)
     inputs = np.zeros((num_samples, memory_depth + 1, 2), dtype=np.float32)
-    # Target: PA output (what cascaded model should produce)
     targets = np.zeros((num_samples, 2), dtype=np.float32)
-    # Also store the clean input for auxiliary loss
     clean_inputs = np.zeros((num_samples, 2), dtype=np.float32)
     
     for i in range(num_samples):
-        # Memory taps from PA input
         for m in range(memory_depth + 1):
             idx = i + memory_depth - m
             inputs[i, m, 0] = u_pa[idx].real
             inputs[i, m, 1] = u_pa[idx].imag
-        
-        # Target is PA output at current time
         target_idx = i + memory_depth
         targets[i, 0] = y_pa[target_idx].real
         targets[i, 1] = y_pa[target_idx].imag
-        
-        # Clean input at current time (for auxiliary loss)
         clean_inputs[i, 0] = u_pa[target_idx].real
         clean_inputs[i, 1] = u_pa[target_idx].imag
     
@@ -333,67 +321,70 @@ def train_step_fla(
     spectral_loss: SpectralLoss,
     config: dict,
     device: torch.device,
-    step: int
+    step: int,
+    memory_depth: int = 3
 ) -> Dict[str, float]:
     """
-    FLA training step following OpenDPD E2E architecture.
+    FLA training step with sequence-based approach.
+    
+    Sequence-based training: processes [B, seq_length, 2] sequences.
+    Generator output: [B, seq_length - M, 2] (trimmed due to memory effects).
     
     Flow:
         x[n] → DPD → u_dpd[n] → PA_frozen → y_cas[n]
-        Loss = ||y_cas - G*x|| + λ_spectral * L_spectral
-        
-    Where G is the desired linear gain (typically 1.0 for normalized signals).
-    
-    In practice:
-        - Input: u_pa (clean PA input)
-        - DPD output: u_dpd (predistorted)
-        - PA output: y_cas (should be linearized)
-        - Target: y_pa (measured PA output, used as reference)
-        
-    The key insight: we want y_cas ≈ G * u_pa (linear amplification)
+        Loss = ||y_cas - G*x|| + λ_spectral * L_spectral (on full sequences)
     """
     train_config = config['training']
     loss_config = train_config.get('loss', {})
     n_critic = train_config.get('n_critic', 5)
     gp_weight = train_config.get('gp_weight', 10.0)
     
-    # Unpack batch: [input_seq, target_y, clean_input]
-    input_seq, target_y, clean_input = batch
-    input_seq = input_seq.to(device)      # [B, M+1, 2]
-    target_y = target_y.to(device)        # [B, 2] - measured PA output
-    clean_input = clean_input.to(device)  # [B, 2] - clean PA input
+    # Unpack batch: [B, seq_length, 2] for sequence-based training
+    input_seq, target_seq, clean_input_seq = batch
+    input_seq = input_seq.to(device)        # [B, seq_length, 2]
+    target_seq = target_seq.to(device)      # [B, seq_length, 2]
+    clean_input_seq = clean_input_seq.to(device)  # [B, seq_length, 2]
+    
+    batch_size = input_seq.size(0)
+    seq_length = input_seq.size(1)
     
     losses = {}
     
     # Compute desired output (linear gain applied to clean input)
-    # For normalized signals, gain ≈ 1.0, so target is approximately clean_input
-    # Or use target_y directly if we want cascaded output to match measured PA behavior
     linear_gain = 1.0
-    desired_output = linear_gain * clean_input  # Idealized linear PA output
+    desired_output_seq = linear_gain * clean_input_seq  # [B, seq_length, 2]
     
     # ===================
-    # Train Discriminator (optional, for GAN-based FLA)
+    # Train Discriminator
     # ===================
     for _ in range(n_critic):
         d_optimizer.zero_grad()
         
         with torch.no_grad():
-            y_cas, u_dpd = cascaded(input_seq)
+            y_cas, u_dpd = cascaded(input_seq)  # Both [B, seq_length - M, 2]
         
-        condition = input_seq[:, -1, :]  # Most recent sample
+        output_len = y_cas.size(1)
         
-        # Real: desired linear output
-        # Fake: cascaded model output
-        d_real = discriminator(desired_output, condition)
-        d_fake = discriminator(y_cas.detach(), condition)
+        # Trim sequences to match output length
+        desired_trimmed = desired_output_seq[:, memory_depth:memory_depth + output_len, :]
+        
+        # Sample random time indices for discriminator
+        rand_idx = torch.randint(0, output_len, (batch_size,), device=device)
+        
+        y_cas_sample = y_cas[torch.arange(batch_size), rand_idx, :]  # [B, 2]
+        desired_sample = desired_trimmed[torch.arange(batch_size), rand_idx, :]  # [B, 2]
+        condition = input_seq[torch.arange(batch_size), memory_depth + rand_idx, :]  # [B, 2]
+        
+        # Real: desired linear output, Fake: cascaded model output
+        d_real = discriminator(desired_sample, condition)
+        d_fake = discriminator(y_cas_sample.detach(), condition)
         
         # Wasserstein loss
         d_loss = d_fake.mean() - d_real.mean()
         
         # Gradient penalty
-        batch_size = desired_output.size(0)
         alpha = torch.rand(batch_size, 1, device=device)
-        interpolates = alpha * desired_output + (1 - alpha) * y_cas.detach()
+        interpolates = alpha * desired_sample + (1 - alpha) * y_cas_sample.detach()
         interpolates.requires_grad_(True)
         
         d_interp = discriminator(interpolates, condition)
@@ -423,23 +414,28 @@ def train_step_fla(
     g_optimizer.zero_grad()
     
     # Forward through cascaded model
-    y_cas, u_dpd = cascaded(input_seq)
+    y_cas, u_dpd = cascaded(input_seq)  # Both [B, seq_length - M, 2]
+    output_len = y_cas.size(1)
     
-    condition = input_seq[:, -1, :]
+    # Trim sequences to match output length
+    desired_trimmed = desired_output_seq[:, memory_depth:memory_depth + output_len, :]
     
-    # Adversarial loss
-    d_fake = discriminator(y_cas, condition)
+    # Adversarial loss: sample from sequences
+    rand_idx = torch.randint(0, output_len, (batch_size,), device=device)
+    y_cas_sample = y_cas[torch.arange(batch_size), rand_idx, :]
+    condition = input_seq[torch.arange(batch_size), memory_depth + rand_idx, :]
+    
+    d_fake = discriminator(y_cas_sample, condition)
     g_adv_loss = -d_fake.mean()
     
-    # Primary FLA loss: ||y_cas - desired_output||
-    # This is the key loss that trains DPD through the frozen PA
-    fla_loss = nn.functional.mse_loss(y_cas, desired_output)
+    # Primary FLA loss on full sequences: ||y_cas - desired_output||
+    fla_loss = nn.functional.mse_loss(y_cas, desired_trimmed)
     
-    # L1 reconstruction loss (optional auxiliary)
-    recon_loss = nn.functional.l1_loss(y_cas, desired_output)
+    # L1 reconstruction loss on full sequences
+    recon_loss = nn.functional.l1_loss(y_cas, desired_trimmed)
     
-    # Spectral loss on cascaded output
-    spectral, spectral_components = spectral_loss(y_cas, desired_output, return_components=True)
+    # Spectral loss on cascaded output (now valid with long sequences)
+    spectral, spectral_components = spectral_loss(y_cas, desired_trimmed, return_components=True)
     
     # Combined generator loss
     g_total = (
@@ -451,7 +447,7 @@ def train_step_fla(
     
     g_total.backward()
     
-    # Gradient clipping
+    # Gradient clipping for stability
     torch.nn.utils.clip_grad_norm_(cascaded.dpd.parameters(), max_norm=1.0)
     
     g_optimizer.step()
@@ -474,56 +470,74 @@ def validate_fla(
     cascaded: CascadedDPDPA,
     val_loader: DataLoader,
     spectral_loss: SpectralLoss,
-    device: torch.device
+    device: torch.device,
+    memory_depth: int = 3
 ) -> Dict[str, float]:
     """
-    Validate FLA model.
+    Validate FLA model with sequence-based metrics.
     
     Metrics computed on cascaded output vs desired linear output.
+    Each sequence is long enough for valid Welch PSD computation.
     """
     cascaded.dpd.eval()
     
     all_preds = []
     all_targets = []
-    all_dpd_outputs = []
-    all_clean_inputs = []
     
     with torch.no_grad():
-        for input_seq, target_y, clean_input in val_loader:
+        for input_seq, target_seq, clean_input_seq in val_loader:
             input_seq = input_seq.to(device)
-            clean_input = clean_input.to(device)
+            clean_input_seq = clean_input_seq.to(device)
             
-            y_cas, u_dpd = cascaded(input_seq)
+            y_cas, u_dpd = cascaded(input_seq)  # [B, seq_length - M, 2]
+            output_len = y_cas.size(1)
+            
+            # Desired output = linear(clean_input), trimmed to match
+            desired_trimmed = clean_input_seq[:, memory_depth:memory_depth + output_len, :]
             
             all_preds.append(y_cas.cpu())
-            all_targets.append(clean_input.cpu())  # Desired output = linear(clean_input)
-            all_dpd_outputs.append(u_dpd.cpu())
-            all_clean_inputs.append(clean_input.cpu())
+            all_targets.append(desired_trimmed.cpu())
     
     cascaded.dpd.train()
     
     # Aggregate predictions
-    all_preds = torch.cat(all_preds, dim=0).numpy()
+    all_preds = torch.cat(all_preds, dim=0).numpy()    # [N, seq_len, 2]
     all_targets = torch.cat(all_targets, dim=0).numpy()
-    all_dpd_outputs = torch.cat(all_dpd_outputs, dim=0).numpy()
     
-    # Compute NMSE: cascaded output vs desired linear output
-    nmse_db = compute_nmse(all_preds, all_targets, return_db=True)
+    # Compute metrics per sequence (each sequence is valid for Welch)
+    all_evm = []
+    all_nmse = []
+    all_aclr_lower = []
+    all_aclr_upper = []
     
-    # Compute EVM
-    evm_db = compute_evm(all_preds, all_targets, return_db=True)
-    
-    # Compute ACLR
-    aclr_lower, aclr_upper = compute_aclr(all_preds, all_targets, return_db=True)
+    for i in range(len(all_preds)):
+        pred = all_preds[i]    # [seq_len, 2]
+        tgt = all_targets[i]   # [seq_len, 2]
+        
+        # NMSE (time-domain)
+        nmse = compute_nmse(pred, tgt, return_db=True)
+        all_nmse.append(nmse)
+        
+        # EVM (frequency-domain per subchannel)
+        evm = compute_evm(pred, tgt, return_db=True)
+        all_evm.append(evm)
+        
+        # ACLR (Welch PSD based)
+        try:
+            aclr_lower, aclr_upper = compute_aclr(pred, tgt, return_db=True)
+            all_aclr_lower.append(aclr_lower)
+            all_aclr_upper.append(aclr_upper)
+        except:
+            pass  # Skip if sequence too short
     
     # L1 error
     l1_error = np.mean(np.abs(all_preds - all_targets))
     
     return {
-        'val_nmse_db': nmse_db,
-        'val_evm_db': evm_db,
-        'val_aclr_lower_db': aclr_lower,
-        'val_aclr_upper_db': aclr_upper,
+        'val_nmse_db': np.mean(all_nmse) if all_nmse else 0.0,
+        'val_evm_db': np.mean(all_evm) if all_evm else 0.0,
+        'val_aclr_lower_db': np.mean(all_aclr_lower) if all_aclr_lower else 0.0,
+        'val_aclr_upper_db': np.mean(all_aclr_upper) if all_aclr_upper else 0.0,
         'val_l1': l1_error
     }
 
@@ -624,18 +638,28 @@ def main():
     u_pa_train, y_pa_train = load_measured_data(data_dir, 'train')
     u_pa_val, y_pa_val = load_measured_data(data_dir, 'val')
     
-    # Create datasets
+    # Create sequence-based datasets for proper spectral training
     memory_depth = config['model']['generator'].get('memory_depth', 3)
-    train_dataset = create_fla_dataset(u_pa_train, y_pa_train, memory_depth)
-    val_dataset = create_fla_dataset(u_pa_val, y_pa_val, memory_depth)
+    seq_length = config.get('spectral_loss', {}).get('nperseg', 2560)
+    stride = seq_length // 2  # 50% overlap
+    batch_size = config['training'].get('batch_size', 8)  # Fewer but larger sequences
     
-    batch_size = config['training'].get('batch_size', 256)
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, drop_last=True)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+    # Create dataloaders using sequence-based dataset
+    train_loader, val_loader, _ = create_dataloaders(
+        u_pa_train, y_pa_train,
+        u_pa_val, y_pa_val,
+        batch_size=batch_size,
+        seq_length=seq_length,
+        stride=stride,
+        memory_depth=memory_depth,
+        mode='fla',
+        num_workers=0,  # Use 0 for Windows compatibility
+        pin_memory=True
+    )
     
-    print(f"\nDataset sizes:")
-    print(f"  Training:   {len(train_dataset):,} samples, {len(train_loader):,} batches")
-    print(f"  Validation: {len(val_dataset):,} samples, {len(val_loader):,} batches")
+    print(f"\nSequence-based training:")
+    print(f"  seq_length={seq_length}, stride={stride}")
+    print(f"  Frequency resolution: {800e6/seq_length/1e3:.1f} kHz (vs 200 MHz for sample-based)")
     
     # Load PA model
     print(f"\n{'='*70}")
@@ -659,10 +683,14 @@ def main():
     
     # Spectral loss
     spectral_loss = SpectralLoss(
-        sample_rate=config['system'].get('sample_rate', 983.04e6),
+        sample_rate=config['system'].get('sample_rate', 800e6),
         bw_main_ch=config['spectral_loss'].get('bw_main_ch', 200e6),
-        bw_adj_ch=config['spectral_loss'].get('bw_adj_ch', 200e6),
-        offset=config['spectral_loss'].get('offset', 200e6)
+        n_sub_ch=config['spectral_loss'].get('n_sub_ch', 10),
+        nperseg=config['spectral_loss'].get('nperseg', 2560),
+        l1_weight=50.0,
+        power_weight=10.0,
+        nmse_weight=10.0,
+        acpr_weight=20.0       # Frequency-domain spectral loss
     ).to(device)
     
     # Resume from checkpoint
@@ -706,7 +734,8 @@ def main():
             losses = train_step_fla(
                 cascaded, discriminator, batch,
                 g_optimizer, d_optimizer,
-                spectral_loss, config, device, global_step
+                spectral_loss, config, device, global_step,
+                memory_depth=memory_depth
             )
             
             for k, v in losses.items():
@@ -731,7 +760,7 @@ def main():
             d_scheduler.step()
         
         # Validation
-        val_metrics = validate_fla(cascaded, val_loader, spectral_loss, device)
+        val_metrics = validate_fla(cascaded, val_loader, spectral_loss, device, memory_depth)
         
         # Log validation metrics
         for k, v in val_metrics.items():
