@@ -435,7 +435,7 @@ class SpectralLoss(nn.Module):
         nperseg: int = 2560,
         l1_weight: float = 1.0,
         power_weight: float = 2.0,      # Reduced from acpr_weight
-        nmse_weight: float = 5.0        # NEW: NMSE loss weight
+        nmse_weight: float = 5.0        # NEW: NMSE loss weight, later add weighted loss for A^3
     ):
         super().__init__()
         
@@ -624,6 +624,7 @@ class ACPRLoss(nn.Module):
         return loss
 
 
+# Used for config.yaml but we wont be using config.yaml because config is defined in jupyter notebook explicitly
 def create_spectral_loss(config: dict) -> SpectralLoss:
     """Factory function to create spectral loss from config."""
     system_config = config.get('system', {})
