@@ -64,6 +64,8 @@
     - [ ] Remove each loss component (L1, spectral, WGAN-GP) one at a time, measure degradation in EVM, ACPR, NMSE.
     - [✓] Add frequency-domain mask loss (fMask) if regulatory mask is violated despite good ACPR.
     - [✓] Add differentiable EVM loss if EVM specifically lags while ACPR is fine.
+- [ ] Reverse DSP change from 64 to 256QAM on jupyter notebook
+- [ ] Backup, do train with qat continue from the best model obtained from non-QAT training
 
 --- 22-01-2026 ---
 - [ ] Check MODEL-ANALYSIS.md number 3 and 4 (change the numbers (loss config iirc on ipynb) and train)
