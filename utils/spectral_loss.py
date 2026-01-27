@@ -380,6 +380,52 @@ def get_amplitude(IQ_signal: np.ndarray) -> np.ndarray:
     return amplitude
 
 
+def compute_a3_weighted_mse(
+    predicted: torch.Tensor,
+    target: torch.Tensor,
+    input_signal: torch.Tensor = None
+) -> torch.Tensor:
+    """
+    Compute A³-weighted MSE (ACLR surrogate loss).
+    
+    From Volterra theory: IMD3 amplitude ∝ |x|³
+    Adjacent-band energy is dominated by high-amplitude samples.
+    
+    Formula: L_A³ = E[|x[n]|³ · |e[n]|²]
+    
+    Args:
+        predicted: DPD output [B, 2] (I, Q)
+        target: Target signal [B, 2] (I, Q)
+        input_signal: PA output / DPD input [B, 2] for amplitude weighting
+                     If None, uses target amplitude
+    
+    Returns:
+        A³-weighted MSE (scalar, differentiable)
+    
+    Reference: Guan & Zhu, IEEE T-MTT 2014
+    """
+    # Use input signal amplitude if provided, else target
+    if input_signal is not None:
+        A = torch.sqrt(input_signal[:, 0]**2 + input_signal[:, 1]**2 + 1e-8)
+    else:
+        A = torch.sqrt(target[:, 0]**2 + target[:, 1]**2 + 1e-8)
+    
+    # Cubic weighting (physics-based: IMD3 ∝ A³)
+    A3 = A ** 3  # [B]
+    
+    # Normalize to prevent gradient explosion
+    A3_normalized = A3 / (A3.mean() + 1e-8)  # [B]
+    
+    # Error squared per sample
+    error_sq = (predicted - target) ** 2  # [B, 2]
+    error_magnitude = error_sq.sum(dim=-1)  # [B] = |e_I|² + |e_Q|²
+    
+    # A³-weighted MSE
+    a3_mse = (A3_normalized * error_magnitude).mean()
+    
+    return a3_mse
+
+
 def set_target_gain(input_iq: np.ndarray, output_iq: np.ndarray) -> float:
     """
     Calculate the target gain (PA gain) from input and output signals.
@@ -435,7 +481,8 @@ class SpectralLoss(nn.Module):
         nperseg: int = 2560,
         l1_weight: float = 1.0,
         power_weight: float = 2.0,      # Reduced from acpr_weight
-        nmse_weight: float = 5.0        # NEW: NMSE loss weight, later add weighted loss for A^3
+        nmse_weight: float = 5.0,       # NEW: NMSE loss weight, later add weighted loss for A^3
+        a3_mse_weight: float = 0.0 
     ):
         super().__init__()
         
@@ -453,7 +500,7 @@ class SpectralLoss(nn.Module):
         self.l1_weight = l1_weight              # L1 reconstruction: 50.0
         self.power_weight = power_weight        # Power regularization: 10.0 (reduced)
         self.nmse_weight = nmse_weight          # NMSE loss: 10.0 (NEW)
-        
+        self.a3_mse_weight = a3_mse_weight      # A³-MSE loss: 0.0 (NEW)
         self.l1_loss = nn.L1Loss()
         
     # MODIFY SpectralLoss.forward() - ADD NMSE loss computation
@@ -462,12 +509,13 @@ class SpectralLoss(nn.Module):
         self,
         predicted: torch.Tensor,
         target: torch.Tensor,
+        input_signal: torch.Tensor = None,  # NEW: for A³ weighting
         return_components: bool = False
     ) -> torch.Tensor:
         """
         Compute combined spectral loss for training with differentiable NMSE.
         
-        Loss = L1_weight * L1 + power_weight * power + nmse_weight * NMSE_dB
+        Loss = L1_weight * L1 + power_weight * power + nmse_weight * NMSE_dB + a3_mse_weight * A³_MSE
         """
         losses = {}
         
@@ -496,12 +544,21 @@ class SpectralLoss(nn.Module):
         # ===== Differentiable NMSE Loss =====
         nmse_loss = compute_nmse_differentiable(predicted, target, return_db=True)
         losses['nmse'] = nmse_loss
+
+        # ===== A³-Weighted MSE Loss (ACLR Surrogate) =====
+        if self.a3_mse_weight > 0:
+            a3_mse = compute_a3_weighted_mse(predicted, target, input_signal)
+            losses['a3_mse'] = a3_mse
+        else:
+            a3_mse = torch.tensor(0.0, device=predicted.device)
+            losses['a3_mse'] = a3_mse
         
         # ===== Combined Loss =====
         total = (
             self.l1_weight * l1 + 
             self.power_weight * power_loss + 
-            self.nmse_weight * nmse_loss
+            self.nmse_weight * nmse_loss +
+            self.a3_mse_weight * a3_mse
         )
         
         if return_components:
