@@ -2,10 +2,14 @@
 """
 Weight Export Script for 6G PA DPD System
 
-Exports trained PyTorch TDNN weights to:
+Exports trained PN-TDNN (Phase-Normalized TDNN) weights to:
 1. Verilog $readmemh format for RTL simulation
 2. Binary format for FPGA BRAM initialization
 3. C header files for embedded software
+
+Architecture: 24 → 32 → 16 → 2 (1,362 parameters)
+Memory Depth: M=3
+Quantization: Q1.15 (16-bit signed fixed-point)
 """
 
 import argparse
@@ -15,14 +19,14 @@ import yaml
 from pathlib import Path
 import struct
 
-from models import TDNNGenerator
-from utils.quantization import quantize_weights_fixed_point
+from models.pn_tdnn_generator import PNTDNNGenerator
+from utils.quantization import quantize_to_fixed_point, QuantizationConfig
 
 
-def load_checkpoint(checkpoint_path: str, config: dict) -> TDNNGenerator:
+def load_checkpoint(checkpoint_path: str, config: dict) -> PNTDNNGenerator:
     """Load trained model from checkpoint."""
-    model = TDNNGenerator(
-        memory_depth=config['model']['generator'].get('memory_depth', 5),
+    model = PNTDNNGenerator(
+        memory_depth=config['model']['generator'].get('memory_depth', 3),
         hidden_dims=config['model']['generator'].get('hidden_dims', [32, 16]),
         leaky_slope=config['model']['generator'].get('leaky_slope', 0.2)
     )
@@ -116,15 +120,15 @@ def export_c_header(weights: dict, filepath: Path, bits: int = 16):
     print(f"Exported C header to {filepath}")
 
 
-def export_temperature_banks(model: TDNNGenerator, base_path: Path, 
+def export_temperature_banks(model: PNTDNNGenerator, base_path: Path, 
                              config: dict) -> dict:
     """
     Export weight banks for different temperature states.
     
     For cold/hot, applies scaling factors from config.
     """
-    bits = config['quantization']['weight_bits']
-    temp_config = config['pa']
+    bits = config['quantization']['weight']['bits']
+    temp_config = config['pa']['thermal']
     
     banks = {
         'normal': {},
@@ -133,18 +137,21 @@ def export_temperature_banks(model: TDNNGenerator, base_path: Path,
     }
     
     # Extract base weights
+    qconfig = QuantizationConfig(weight_bits=bits, weight_frac_bits=bits-1)
     for name, param in model.named_parameters():
         if 'weight' in name or 'bias' in name:
-            w_float = param.detach().cpu().numpy()
-            w_fixed = quantize_weights_fixed_point(
-                torch.tensor(w_float), 
-                num_bits=bits
-            ).numpy()
+            w_float = param.detach().cpu()
+            w_fixed = quantize_to_fixed_point(
+                w_float,
+                scale=qconfig.weight_scale,
+                bits=bits,
+                signed=True
+            ).numpy().astype(np.int16)
             banks['normal'][name] = w_fixed
     
     # Apply temperature drift coefficients
-    cold_scale = 1.0 + temp_config['cold_drift_factor']
-    hot_scale = 1.0 + temp_config['hot_drift_factor']
+    cold_scale = 1.0 + temp_config['cold']['gain_drift']
+    hot_scale = 1.0 + temp_config['hot']['gain_drift']
     
     for name, w in banks['normal'].items():
         # Scale weights for temperature compensation
@@ -177,7 +184,7 @@ def export_temperature_banks(model: TDNNGenerator, base_path: Path,
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Export trained DPD weights for FPGA deployment'
+        description='Export trained PN-TDNN DPD weights for FPGA deployment (M=3, 24→32→16→2)'
     )
     parser.add_argument(
         '--checkpoint', '-c',
@@ -244,7 +251,7 @@ def main():
         config = yaml.safe_load(f)
     
     output_path = Path(args.output)
-    bits = config['quantization']['weight_bits']
+    bits = config['quantization']['weight']['bits']
     
     if 'all' in args.format:
         args.format = ['hex', 'bin', 'header']
@@ -279,13 +286,16 @@ def main():
             all_weights = []
             weights = {}
             
+            qconfig = QuantizationConfig(weight_bits=bits, weight_frac_bits=bits-1)
             for name, param in model.named_parameters():
                 if 'weight' in name or 'bias' in name:
-                    w_float = param.detach().cpu().numpy()
-                    w_fixed = quantize_weights_fixed_point(
-                        torch.tensor(w_float),
-                        num_bits=bits
-                    ).numpy()
+                    w_float = param.detach().cpu()
+                    w_fixed = quantize_to_fixed_point(
+                        w_float,
+                        scale=qconfig.weight_scale,
+                        bits=bits,
+                        signed=True
+                    ).numpy().astype(np.int16)
                     weights[name] = w_fixed
                     all_weights.extend(w_fixed.flatten())
             
@@ -350,13 +360,16 @@ def main():
         weights = {}
         all_weights = []
         
+        qconfig = QuantizationConfig(weight_bits=bits, weight_frac_bits=bits-1)
         for name, param in model.named_parameters():
             if 'weight' in name or 'bias' in name:
-                w_float = param.detach().cpu().numpy()
-                w_fixed = quantize_weights_fixed_point(
-                    torch.tensor(w_float),
-                    num_bits=bits
-                ).numpy()
+                w_float = param.detach().cpu()
+                w_fixed = quantize_to_fixed_point(
+                    w_float,
+                    scale=qconfig.weight_scale,
+                    bits=bits,
+                    signed=True
+                ).numpy().astype(np.int16)
                 weights[name] = w_fixed
                 all_weights.extend(w_fixed.flatten())
         
@@ -373,7 +386,7 @@ def main():
     
     # Print summary
     print("\n" + "=" * 60)
-    print("Export Summary")
+    print("Export Summary - PN-TDNN Generator")
     print("=" * 60)
     
     # Use last loaded model for parameter count
@@ -381,9 +394,13 @@ def main():
         model = models['normal']  # Use normal temp model for summary
     
     total_params = sum(p.numel() for p in model.parameters())
-    print(f"Total parameters: {total_params}")
+    memory_bytes = total_params * bits // 8
+    
+    print(f"\nArchitecture: 24 → 32 → 16 → 2 (M=3)")
+    print(f"Total parameters: {total_params} (expected: 1,362)")
+    print(f"Weight format: Q1.{bits-1} signed fixed-point")
     print(f"Weight bits: {bits}")
-    print(f"Memory size per bank: {total_params * bits // 8} bytes")
+    print(f"Memory size per bank: {memory_bytes} bytes ({memory_bytes/1024:.2f} KB)")
     print(f"Output directory: {output_path}")
     
     # Layer breakdown
