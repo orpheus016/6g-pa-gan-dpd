@@ -36,6 +36,8 @@ module aspsa_engine #(
     // Control
     input  wire                     enable,
     input  wire                     anneal_reset,   // Reset annealing (temp change)
+    input  wire [1:0]               deadband_state, // From deadband_fsm: 0=IDLE, 1=TRACK, 2=PANIC, 3=BYPASS
+    input  wire [1:0]               gain_mult,      // Gain multiplier: 0=off, 1=1×, 2=4×
     
     // Error input (from error_metric module)
     input  wire signed [15:0]       error_metric,   // Q8.8 error (e.g., EVM)
@@ -52,7 +54,8 @@ module aspsa_engine #(
     
     // Status
     output reg  [15:0]              iteration,
-    output reg  [LR_WIDTH-1:0]      learning_rate,
+    output wire [LR_WIDTH-1:0]      learning_rate,
+    output reg  [3:0]               spsa_state,     // Current SPSA FSM state for debugging
     output wire                     busy
 );
 
@@ -107,6 +110,8 @@ module aspsa_engine #(
     
     // Learning rate and perturbation (annealed)
     reg [LR_WIDTH-1:0] pert_size;
+    reg [LR_WIDTH-1:0] learning_rate_base;      // Base LR before gain multiplier
+    reg [LR_WIDTH-1:0] pert_size_base;          // Base perturbation before gain mult
     
     //==========================================================================
     // State Machine
@@ -121,10 +126,19 @@ module aspsa_engine #(
             state <= next_state;
     end
     
+    // Track current SPSA FSM state for status output
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n)
+            spsa_state <= 4'd0;
+        else
+            spsa_state <= state;
+    end
+    
     always @(*) begin
         next_state = state;
         case (state)
-            ST_IDLE:        if (enable && error_valid) next_state = ST_PERTURB_POS;
+            // Gate SPSA startup based on deadband_state: only proceed if gain_mult != 0
+            ST_IDLE:        if (enable && error_valid && (gain_mult != 0)) next_state = ST_PERTURB_POS;
             ST_PERTURB_POS: if (weight_idx == NUM_WEIGHTS) next_state = ST_WAIT_POS;
             ST_WAIT_POS:    if (error_valid) next_state = ST_PERTURB_NEG;
             ST_PERTURB_NEG: if (weight_idx == NUM_WEIGHTS) next_state = ST_WAIT_NEG;
@@ -153,13 +167,13 @@ module aspsa_engine #(
     end
     
     //==========================================================================
-    // Annealing Schedule
+    // Annealing Schedule (with gain multiplier from deadband FSM)
     //==========================================================================
     
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n || anneal_reset) begin
-            learning_rate <= LR_INITIAL;
-            pert_size <= PERT_INITIAL;
+            learning_rate_base <= LR_INITIAL;
+            pert_size_base <= PERT_INITIAL;
             anneal_cnt <= 0;
             anneal_step <= 0;
             iteration <= 0;
@@ -173,11 +187,40 @@ module aspsa_engine #(
                 anneal_cnt <= 0;
                 anneal_step <= anneal_step + 1;
                 // Shift-based decay (divide by 2)
-                learning_rate <= learning_rate >> 1;
-                pert_size <= pert_size >> 1;
+                learning_rate_base <= learning_rate_base >> 1;
+                pert_size_base <= pert_size_base >> 1;
             end
         end
     end
+    
+    // Apply gain multiplier based on deadband state (combinatorial)
+    reg [LR_WIDTH-1:0] learning_rate_temp;
+    reg [LR_WIDTH-1:0] pert_size_temp;
+    
+    always @(*) begin
+        case (gain_mult)
+            2'd0: begin
+                learning_rate_temp = {LR_WIDTH{1'b0}};      // Off
+                pert_size_temp = {LR_WIDTH{1'b0}};
+            end
+            2'd1: begin
+                learning_rate_temp = learning_rate_base;     // 1× normal
+                pert_size_temp = pert_size_base;
+            end
+            2'd2: begin
+                learning_rate_temp = learning_rate_base << 2; // 4× in PANIC mode
+                pert_size_temp = pert_size_base << 1;        // 2× perturbation
+            end
+            default: begin
+                learning_rate_temp = {LR_WIDTH{1'b0}};
+                pert_size_temp = {LR_WIDTH{1'b0}};
+            end
+        endcase
+    end
+    
+    assign learning_rate = learning_rate_temp;
+    
+    always @(*) pert_size = pert_size_temp;
     
     //==========================================================================
     // Weight Index Counter

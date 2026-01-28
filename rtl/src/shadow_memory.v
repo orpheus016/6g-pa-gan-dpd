@@ -86,19 +86,21 @@ module shadow_memory #(
     endfunction
     
     //==========================================================================
-    // CDC Synchronizers for Handshake
+    // CDC Synchronizers for Handshake (3-stage for higher MTBF)
     //==========================================================================
     
-    // Swap request synchronizer (SPSA → NN domain)
-    reg swap_req_sync1, swap_req_sync2;
+    // Swap request synchronizer (SPSA → NN domain): 3-stage
+    reg swap_req_sync1, swap_req_sync2, swap_req_sync3;
     always @(posedge clk_rd or negedge rst_n) begin
         if (!rst_n) begin
             swap_req_sync1 <= 0;
             swap_req_sync2 <= 0;
+            swap_req_sync3 <= 0;
         end
         else begin
             swap_req_sync1 <= swap_req;
             swap_req_sync2 <= swap_req_sync1;
+            swap_req_sync3 <= swap_req_sync2;
         end
     end
     
@@ -173,7 +175,7 @@ module shadow_memory #(
             case (swap_state)
                 SWAP_IDLE: begin
                     swap_ack_int <= 0;
-                    if (swap_req_sync2) begin
+                    if (swap_req_sync3) begin
                         swap_state <= SWAP_WAIT;
                         swap_delay_cnt <= 0;
                     end
@@ -196,7 +198,7 @@ module shadow_memory #(
                 SWAP_ACK: begin
                     swap_ack_int <= 1;
                     // Wait for request to deassert
-                    if (!swap_req_sync2) begin
+                    if (!swap_req_sync3) begin
                         swap_state <= SWAP_IDLE;
                     end
                 end

@@ -105,7 +105,22 @@ module dpd_top #(
     wire        spsa_weight_we;
     wire [15:0] spsa_iteration;
     wire [15:0] spsa_learning_rate;
+    wire [3:0]  spsa_fsm_state;
     wire        spsa_busy_int;
+    
+    // Deadband FSM outputs
+    wire [1:0]  deadband_state;
+    wire        deadband_spsa_enable;
+    wire [1:0]  deadband_gain_mult;
+    
+    // Safety monitor outputs
+    wire        safety_bypass_active;
+    wire        safety_overflow_alarm;
+    wire [15:0] safety_overflow_count;
+    
+    // DPD output signals
+    wire signed [DATA_WIDTH-1:0] dpd_out_i;
+    wire signed [DATA_WIDTH-1:0] dpd_out_q;
     
     // Shadow memory CDC signals
     wire        shadow_swap_req;
@@ -150,6 +165,48 @@ module dpd_top #(
     
     // Weight bank selection
     assign weight_bank_sel = temp_state;
+    
+    //==========================================================================
+    // Deadband FSM (1 MHz domain - jitter prevention)
+    //==========================================================================
+    deadband_fsm u_deadband_fsm (
+        .clk(clk_spsa),
+        .rst_n(rst_n),
+        
+        // Error metric in Q8.8 format (from error_metric)
+        .evm_db(error_evm),
+        
+        // Safety override from overflow detector
+        .overflow_flag(safety_overflow_alarm),
+        
+        // ARM reset (when safety condition clears)
+        .arm_reset(1'b0),  // Connect to ARM interrupt handler if available
+        
+        // State and control outputs
+        .state(deadband_state),
+        .spsa_enable(deadband_spsa_enable),
+        .gain_mult(deadband_gain_mult)
+    );
+    
+    //==========================================================================
+    // Safety Monitor (250 MHz / 200 MHz domain - real-time overflow detection)
+    //==========================================================================
+    dpd_safety_monitor u_safety_monitor (
+        .clk_data(clk_nn),
+        .rst_n(rst_n),
+        
+        // DPD output samples
+        .dpd_i(dpd_out_i),
+        .dpd_q(dpd_out_q),
+        
+        // Control
+        .arm_reset(1'b0),  // Connect to ARM interrupt handler if available
+        
+        // Status
+        .bypass_active(safety_bypass_active),
+        .overflow_alarm(safety_overflow_alarm),
+        .overflow_count(safety_overflow_count)
+    );
     
     //==========================================================================
     // Input Buffer with Memory Taps (200 MHz domain)
@@ -199,8 +256,8 @@ module dpd_top #(
         .weight_bank_sel(weight_bank_sel),
         
         // Output
-        .out_i(gen_out_i),
-        .out_q(gen_out_q),
+        .out_i(dpd_out_i),
+        .out_q(dpd_out_q),
         .out_valid(gen_out_valid),
         
         // Status
@@ -260,7 +317,7 @@ module dpd_top #(
     );
     
     //==========================================================================
-    // A-SPSA Engine (1 MHz domain)
+    // A-SPSA Engine (1 MHz domain) with Deadband Control
     //==========================================================================
     aspsa_engine #(
         .WEIGHT_WIDTH(WEIGHT_WIDTH),
@@ -273,6 +330,8 @@ module dpd_top #(
         // Control
         .enable(spsa_enable),
         .anneal_reset(anneal_reset | temp_changed),
+        .deadband_state(deadband_state),
+        .gain_mult(deadband_gain_mult),
         
         // Error input
         .error_metric(error_evm),
@@ -290,16 +349,43 @@ module dpd_top #(
         // Status
         .iteration(spsa_iteration),
         .learning_rate(spsa_learning_rate),
+        .spsa_state(spsa_fsm_state),
         .busy(spsa_busy_int)
     );
     
     //==========================================================================
-    // Output Stage (bypass or DPD output)
+    // Bypass Multiplexer (200 MHz domain - output stage)
+    //==========================================================================
+    wire [DATA_WIDTH-1:0] mux_out_i;
+    wire [DATA_WIDTH-1:0] mux_out_q;
+    
+    dpd_bypass_mux u_bypass_mux (
+        .clk_data(clk_nn),
+        .rst_n(rst_n),
+        
+        // ADC passthrough path
+        .adc_i(s_axis_adc_i),
+        .adc_q(s_axis_adc_q),
+        
+        // DPD path
+        .dpd_i(dpd_out_i),
+        .dpd_q(dpd_out_q),
+        
+        // Control from safety monitor
+        .bypass_active(safety_bypass_active),
+        
+        // Output to DAC
+        .dac_i(mux_out_i),
+        .dac_q(mux_out_q)
+    );
+    
+    //==========================================================================
+    // Output Stage (DPD enable gating)
     //==========================================================================
     
-    // When DPD disabled, pass through input directly
-    assign m_axis_dac_i = dpd_enable ? gen_out_i : s_axis_adc_i;
-    assign m_axis_dac_q = dpd_enable ? gen_out_q : s_axis_adc_q;
+    // When DPD disabled, pass through input directly (before bypass mux)
+    assign m_axis_dac_i = dpd_enable ? mux_out_i : s_axis_adc_i;
+    assign m_axis_dac_q = dpd_enable ? mux_out_q : s_axis_adc_q;
     assign m_axis_dac_valid = dpd_enable ? gen_out_valid : s_axis_adc_valid;
     
     //==========================================================================
