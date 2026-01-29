@@ -134,7 +134,7 @@ class PNTDNNGenerator(nn.Module):
         - At inference: x → DPD(x) → PA(DPD(x)) ≈ linear(x)
     
     Key design decisions:
-        - LeakyReLU(0.2): Prevents dead neurons, WGAN-GP standard
+        - LeakyReLU(0.25): Prevents dead neurons, WGAN-GP standard
         - No Tanh output: Phase denormalization naturally bounds output
         - QAT: Q1.15 weights (16-bit), Q8.8 activations (16-bit)
     """
@@ -143,7 +143,7 @@ class PNTDNNGenerator(nn.Module):
         self,
         memory_depth: int = 3,
         hidden_dims: List[int] = [32, 16],
-        leaky_slope: float = 0.2
+        leaky_slope: float = 0.25
     ):
         super().__init__()
         
@@ -408,7 +408,7 @@ class Discriminator(nn.Module):
         self,
         input_dim: int = 4,
         hidden_dims: List[int] = [64, 32],
-        leaky_slope: float = 0.2
+        leaky_slope: float = 0.25
     ):
         super().__init__()
         
@@ -470,7 +470,7 @@ def create_pn_tdnn_generator(memory_depth: int = 3) -> PNTDNNGenerator:
     return PNTDNNGenerator(
         memory_depth=memory_depth,
         hidden_dims=[32, 16],
-        leaky_slope=0.2
+        leaky_slope=0.25
     )
 
 
@@ -484,7 +484,7 @@ def create_discriminator() -> Discriminator:
     return Discriminator(
         input_dim=4,
         hidden_dims=[64, 32],
-        leaky_slope=0.2
+        leaky_slope=0.25
     )
 
 
