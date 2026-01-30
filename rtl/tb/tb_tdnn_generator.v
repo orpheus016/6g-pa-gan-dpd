@@ -13,7 +13,7 @@ module tb_tdnn_generator;
     parameter DATA_WIDTH = 16;
     parameter WEIGHT_WIDTH = 16;
     parameter ACC_WIDTH = 32;
-    parameter INPUT_DIM = 18;
+    parameter INPUT_DIM = 24;
     parameter HIDDEN1_DIM = 32;
     parameter HIDDEN2_DIM = 16;
     parameter OUTPUT_DIM = 2;
@@ -45,9 +45,10 @@ module tb_tdnn_generator;
     //==========================================================================
     // Weight Memory (simplified - stores all weights)
     //==========================================================================
-    // Total weights: 18*32 + 32*16 + 16*2 = 576 + 512 + 32 = 1120
+    // Total weights: 24*32 + 32*16 + 16*2 = 768 + 512 + 32 = 1312
     // Total biases: 32 + 16 + 2 = 50
-    reg signed [WEIGHT_WIDTH-1:0] weight_mem [0:1199];
+    // Total: 1,362 parameters
+    reg signed [WEIGHT_WIDTH-1:0] weight_mem [0:1361];
     
     // Weight read
     always @(posedge clk) begin
@@ -98,7 +99,7 @@ module tb_tdnn_generator;
         
         // Initialize weights with realistic values (Q1.15)
         // Use 0x1000 (0.125) instead of small random values
-        for (i = 0; i < 1200; i = i + 1) begin
+        for (i = 0; i < 1362; i = i + 1) begin
             weight_mem[i] = 16'h1000 + ($random(seed) % 2048);  // 0.125 ± small variation
         end
         
@@ -179,7 +180,16 @@ module tb_tdnn_generator;
     task test_inference_unit;
         begin
             // Set unit input (I=1.0, Q=0)
-            in_vector = {16'h4000, 16'h0000, {16'h1000, 16'h1000, 16'h1000, 16'h1000, 16'h1000, 16'h1000, 16'h1000, 16'h1000, 16'h1000, 16'h1000, 16'h1000, 16'h1000, 16'h1000, 16'h1000, 16'h1000, 16'h1000}};
+            // For 24-dim PN-TDNN: I_0=0.5, Q_0=0, then A, A³, I_norm, Q_norm values, then 3 past taps
+            // Simplified: [I_0, Q_0, A, A³, I_norm, Q_norm, I, Q, ... repeat for M=3]
+            for (i = 0; i < INPUT_DIM; i = i + 1) begin
+                if (i == 4)  // I value
+                    in_vector[i*DATA_WIDTH +: DATA_WIDTH] = 16'h4000;  // 0.5 in Q1.15
+                else if (i == 5)  // Q value
+                    in_vector[i*DATA_WIDTH +: DATA_WIDTH] = 16'h0000;
+                else
+                    in_vector[i*DATA_WIDTH +: DATA_WIDTH] = 16'h1000;  // 0.125 default
+            end
             
             @(posedge clk);
             in_valid <= 1;

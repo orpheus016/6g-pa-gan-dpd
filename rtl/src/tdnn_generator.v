@@ -1,13 +1,18 @@
 //==============================================================================
-// 6G PA GAN-DPD: TDNN Generator (Memory-Aware Neural Network)
+// 6G PA GAN-DPD: PN-TDNN Generator (Memory-Aware Neural Network)
 //==============================================================================
 //
 // Description:
-//   Time-Delay Neural Network generator for DPD with nonlinear feature extraction.
-//   Architecture: FC1(30→32) → LeakyReLU → FC2(32→16) → LeakyReLU → FC3(16→2) → Tanh
+//   Phase-Normalized TDNN generator for DPD with phase denormalization output.
+//   Architecture: FC1(24→32) → LeakyReLU → FC2(32→16) → LeakyReLU → FC3(16→2) → Phase Denorm
 //
-//   Input features: [I(n), Q(n), |x(n)|, |x(n)|², |x(n)|⁴, |x(n-1)|, |x(n-1)|², |x(n-1)|⁴, ...,
-//                    |x(n-M)|, |x(n-M)|², |x(n-M)|⁴, I(n-1), Q(n-1), ..., I(n-M), Q(n-M)]
+//   Input: Phase-normalized features (24-dim for M=3)
+//   Output: Phase-denormalized IQ via complex multiply
+//
+//   Phase denormalization formula:
+//     I_out = (I_fc·I_0 - Q_fc·Q_0)
+//     Q_out = (I_fc·Q_0 + Q_fc·I_0)
+//     (No division by A_0 as input is already normalized)
 //
 // Quantization:
 //   Weights:     Q1.15 (16-bit signed)
@@ -15,15 +20,15 @@
 //   Accumulator: Q16.16 (32-bit)
 //
 // Parameters:
-//   Total: 1,554 params (up from 1,170)
-//   FC1: 30×32 + 32 = 992 (up from 608)
+//   Total: 1,362 params (24-input dimension)
+//   FC1: 24×32 + 32 = 800
 //   FC2: 32×16 + 16 = 528
 //   FC3: 16×2 + 2 = 34
 //
 // Timing:
 //   - Pipelined MAC with 6 parallel multipliers
-//   - Latency: ~60 cycles per sample at 200 MHz (increased due to larger FC1)
-//   - Throughput: 1 sample per ~60 cycles (3.3 Msps)
+//   - Latency: ~55 cycles per sample at 200 MHz (24-input FC1 + 1 denorm cycle)
+//   - Throughput: 1 sample per ~55 cycles (3.6 Msps)
 //
 // Author: Generated for 6G PA GAN-DPD Project
 //==============================================================================
@@ -35,8 +40,8 @@ module tdnn_generator #(
     parameter WEIGHT_WIDTH  = 16,           // Q1.15 weights
     parameter ACT_WIDTH     = 16,           // Q8.8 activations
     parameter ACC_WIDTH     = 32,           // Q16.16 accumulator
-    parameter MEMORY_DEPTH  = 5,            // Memory taps
-    parameter INPUT_DIM     = 30,           // 2 + 3*(M+1) + 2*M = 30 for M=5
+    parameter MEMORY_DEPTH  = 3,            // Memory taps
+    parameter INPUT_DIM     = 24,           // 2 + 3*(M+1) + 2*M = 30 for M=5
     parameter HIDDEN1_DIM   = 32,
     parameter HIDDEN2_DIM   = 16,
     parameter OUTPUT_DIM    = 2,
@@ -67,16 +72,16 @@ module tdnn_generator #(
     // Local Parameters
     //==========================================================================
     
-    // Weight address offsets (for 30-dim input)
-    localparam WADDR_FC1 = 0;                           // 30*32 = 960 weights
-    localparam WADDR_B1  = 960;                         // 32 biases
-    localparam WADDR_FC2 = 992;                         // 32*16 = 512 weights
-    localparam WADDR_B2  = 1504;                        // 16 biases
-    localparam WADDR_FC3 = 1520;                        // 16*2 = 32 weights
-    localparam WADDR_B3  = 1552;                        // 2 biases
+    // Weight address offsets (for 24-dim input, phase-normalized)
+    localparam WADDR_FC1 = 0;                           // 24*32 = 768 weights
+    localparam WADDR_B1  = 768;                         // 32 biases
+    localparam WADDR_FC2 = 800;                         // 32*16 = 512 weights
+    localparam WADDR_B2  = 1312;                        // 16 biases
+    localparam WADDR_FC3 = 1328;                        // 16*2 = 32 weights
+    localparam WADDR_B3  = 1360;                        // 2 biases
     
     // Bank offset
-    localparam BANK_SIZE = 1554;  // Total parameters per temperature bank
+    localparam BANK_SIZE = 1362;  // Total parameters per temperature bank (1,362 for PN-TDNN)
     
     // State machine
     localparam ST_IDLE     = 4'd0;
@@ -86,7 +91,7 @@ module tdnn_generator #(
     localparam ST_FC2      = 4'd4;
     localparam ST_ACT2     = 4'd5;
     localparam ST_FC3      = 4'd6;
-    localparam ST_TANH     = 4'd7;
+    localparam ST_DENORM   = 4'd7;  // Phase denormalization
     localparam ST_OUTPUT   = 4'd8;
     
     //==========================================================================
@@ -118,6 +123,10 @@ module tdnn_generator #(
     reg [5:0] in_idx;      // Input index
     reg [5:0] out_idx;     // Output index
     reg [5:0] mac_cnt;     // MAC counter
+    
+    // Phase denormalization reference (stored during input load)
+    reg signed [DATA_WIDTH-1:0] ref_i;      // I_0 (current sample I from input)
+    reg signed [DATA_WIDTH-1:0] ref_q;      // Q_0 (current sample Q from input)
     
     // Weight bank base address
     wire [15:0] bank_base = weight_bank_sel * BANK_SIZE;
@@ -152,8 +161,8 @@ module tdnn_generator #(
             ST_ACT1:    next_state = ST_FC2;
             ST_FC2:     if (out_idx == HIDDEN2_DIM) next_state = ST_ACT2;
             ST_ACT2:    next_state = ST_FC3;
-            ST_FC3:     if (out_idx == OUTPUT_DIM) next_state = ST_TANH;
-            ST_TANH:    next_state = ST_OUTPUT;
+            ST_FC3:     if (out_idx == OUTPUT_DIM) next_state = ST_DENORM;
+            ST_DENORM:  next_state = ST_OUTPUT;
             ST_OUTPUT:  next_state = ST_IDLE;
             default:    next_state = ST_IDLE;
         endcase
@@ -169,6 +178,12 @@ module tdnn_generator #(
             for (i = 0; i < INPUT_DIM; i = i + 1) begin
                 input_buf[i] <= in_vector[DATA_WIDTH*i +: DATA_WIDTH];
             end
+            
+            // Extract reference IQ from input
+            // In phase-normalized features: indices 4-5 contain I(n) and Q(n)
+            // (A, A³, I_norm, Q_norm, I, Q, ... for k=0)
+            ref_i <= in_vector[DATA_WIDTH*4 +: DATA_WIDTH];  // I_0
+            ref_q <= in_vector[DATA_WIDTH*5 +: DATA_WIDTH];  // Q_0
         end
     end
     
@@ -316,30 +331,29 @@ module tdnn_generator #(
     end
     
     //==========================================================================
-    // Tanh Activation (LUT-based)
+    // Phase Denormalization
     //==========================================================================
+    // Rotate FC output back to original phase (no division needed as input normalized)
+    // Complex multiply: (I_fc + jQ_fc) × (I_0 + jQ_0)
+    // Result: I_out = I_fc·I_0 - Q_fc·Q_0
+    //         Q_out = I_fc·Q_0 + Q_fc·I_0
     
-    // Tanh LUT (256 entries, Q1.15 output)
-    // Input range: [-4, 4] mapped to [0, 255]
-    reg signed [DATA_WIDTH-1:0] tanh_lut [0:255];
-    
-    // Initialize LUT from hex file
-    initial begin
-        $display("Loading tanh LUT from tanh_lut.hex");
-        $readmemh("tanh_lut.hex", tanh_lut);
-        $display("Tanh LUT loaded: first=0x%h, mid=0x%h, last=0x%h", 
-                 tanh_lut[0], tanh_lut[128], tanh_lut[255]);
-    end
-    
-    // LUT index calculation
-    wire [7:0] tanh_idx_i = (fc3_out[0] + 16'sh8000) >> 8;  // Map to [0, 255]
-    wire [7:0] tanh_idx_q = (fc3_out[1] + 16'sh8000) >> 8;
+    // Intermediate products (32-bit for Q1.15 × Q1.15 = Q2.30)
+    reg signed [2*DATA_WIDTH-1:0] prod_ii, prod_qq, prod_iq, prod_qi;
     
     always @(posedge clk) begin
-        if (state == ST_TANH) begin
-            // Apply tanh via LUT
-            fc3_out[0] <= tanh_lut[tanh_idx_i];
-            fc3_out[1] <= tanh_lut[tanh_idx_q];
+        if (state == ST_DENORM) begin
+            // Calculate products: (I_fc + jQ_fc) × (I_0 + jQ_0)
+            prod_ii <= fc3_out[0] * ref_i;  // I_fc * I_0
+            prod_qq <= fc3_out[1] * ref_q;  // Q_fc * Q_0
+            prod_iq <= fc3_out[0] * ref_q;  // I_fc * Q_0
+            prod_qi <= fc3_out[1] * ref_i;  // Q_fc * I_0
+            
+            // Combine products (scale back from Q2.30 to Q1.15)
+            // Real part:  I_out = (I_fc·I_0 - Q_fc·Q_0) >> 15
+            // Imag part:  Q_out = (I_fc·Q_0 + Q_fc·I_0) >> 15
+            fc3_out[0] <= ((prod_ii - prod_qq) >>> 15);  // Q2.30 -> Q1.15
+            fc3_out[1] <= ((prod_iq + prod_qi) >>> 15);  // Q2.30 -> Q1.15
         end
     end
     
