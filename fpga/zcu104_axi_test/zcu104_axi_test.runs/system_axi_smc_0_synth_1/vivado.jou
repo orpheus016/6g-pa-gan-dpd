@@ -3,8 +3,8 @@
 # SW Build 6299465 on Fri Nov 14 19:35:11 GMT 2025
 # IP Build 6300035 on Fri Nov 14 10:48:45 MST 2025
 # SharedData Build 6298862 on Thu Nov 13 04:50:51 MST 2025
-# Start of session at: Fri Jan 30 16:05:05 2026
-# Process ID         : 1192
+# Start of session at: Fri Jan 30 18:17:44 2026
+# Process ID         : 19228
 # Current directory  : C:/Users/James/github/6g-pa-gan-dpd/fpga/zcu104_axi_test/zcu104_axi_test.runs/system_axi_smc_0_synth_1
 # Command line       : vivado.exe -log system_axi_smc_0.vds -product Vivado -mode batch -messageDb vivado.pb -notrace -source system_axi_smc_0.tcl
 # Log file           : C:/Users/James/github/6g-pa-gan-dpd/fpga/zcu104_axi_test/zcu104_axi_test.runs/system_axi_smc_0_synth_1/system_axi_smc_0.vds
@@ -17,8 +17,8 @@
 # CPU Physical cores : 8
 # CPU Logical cores  : 16
 # Host memory        : 16474 MB
-# Swap memory        : 14495 MB
-# Total Virtual      : 30969 MB
-# Available Virtual  : 4134 MB
+# Swap memory        : 16847 MB
+# Total Virtual      : 33321 MB
+# Available Virtual  : 6735 MB
 #-----------------------------------------------------------
 source system_axi_smc_0.tcl -notrace

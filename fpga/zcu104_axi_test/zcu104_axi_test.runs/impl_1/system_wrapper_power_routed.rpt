@@ -1,7 +1,7 @@
 Copyright 1986-2022 Xilinx, Inc. All Rights Reserved. Copyright 2022-2025 Advanced Micro Devices, Inc. All Rights Reserved.
 ----------------------------------------------------------------------------------------------------------------------------------------------------------------
 | Tool Version     : Vivado v.2025.2 (win64) Build 6299465 Fri Nov 14 19:35:11 GMT 2025
-| Date             : Fri Jan 30 16:11:40 2026
+| Date             : Fri Jan 30 18:23:44 2026
 | Host             : LAPTOP-H7062M33 running 64-bit major release  (build 9200)
 | Command          : report_power -file system_wrapper_power_routed.rpt -pb system_wrapper_power_summary_routed.pb -rpx system_wrapper_power_routed.rpx
 | Design           : system_wrapper
@@ -30,10 +30,10 @@ Table of Contents
 ----------
 
 +--------------------------+--------------+
-| Total On-Chip Power (W)  | 3.369        |
+| Total On-Chip Power (W)  | 3.393        |
 | Design Power Budget (W)  | Unspecified* |
 | Power Budget Margin (W)  | NA           |
-| Dynamic (W)              | 2.678        |
+| Dynamic (W)              | 2.701        |
 | Device Static (W)        | 0.692        |
 | Effective TJA (C/W)      | 1.0          |
 | Max Ambient (C)          | 96.7         |
@@ -52,20 +52,20 @@ Table of Contents
 +-------------------------+-----------+----------+-----------+-----------------+
 | On-Chip                 | Power (W) | Used     | Available | Utilization (%) |
 +-------------------------+-----------+----------+-----------+-----------------+
-| Clocks                  |     0.011 |        3 |       --- |             --- |
-| CLB Logic               |     0.009 |     2799 |       --- |             --- |
-|   LUT as Logic          |     0.009 |      960 |    230400 |            0.42 |
+| Clocks                  |     0.015 |        3 |       --- |             --- |
+| CLB Logic               |     0.013 |     2799 |       --- |             --- |
+|   LUT as Logic          |     0.012 |      964 |    230400 |            0.42 |
 |   Register              |    <0.001 |     1364 |    460800 |            0.30 |
 |   CARRY8                |    <0.001 |        5 |     28800 |            0.02 |
 |   LUT as Shift Register |    <0.001 |        2 |    101760 |           <0.01 |
 |   Others                |     0.000 |       95 |       --- |             --- |
 |   F7/F8 Muxes           |     0.000 |       99 |    230400 |            0.04 |
-| Signals                 |     0.015 |     2373 |       --- |             --- |
-| PS8                     |     2.643 |        1 |       --- |             --- |
+| Signals                 |     0.029 |     2375 |       --- |             --- |
+| PS8                     |     2.645 |        1 |       --- |             --- |
 | Static Power            |     0.692 |          |           |                 |
 |   PS Static             |     0.098 |          |           |                 |
 |   PL Static             |     0.593 |          |           |                 |
-| Total                   |     3.369 |          |           |                 |
+| Total                   |     3.393 |          |           |                 |
 +-------------------------+-----------+----------+-----------+-----------------+
 
 
@@ -75,7 +75,7 @@ Table of Contents
 +------------------+-------------+-----------+-------------+------------+-------------+-------------+------------+
 | Source           | Voltage (V) | Total (A) | Dynamic (A) | Static (A) | Powerup (A) | Budget (A)  | Margin (A) |
 +------------------+-------------+-----------+-------------+------------+-------------+-------------+------------+
-| Vccint           |       0.850 |     0.193 |       0.042 |      0.151 |       NA    | Unspecified | NA         |
+| Vccint           |       0.850 |     0.217 |       0.066 |      0.151 |       NA    | Unspecified | NA         |
 | Vccint_io        |       0.850 |     0.071 |       0.000 |      0.071 |       NA    | Unspecified | NA         |
 | Vccbram          |       0.850 |     0.002 |       0.000 |      0.002 |       NA    | Unspecified | NA         |
 | Vccaux           |       1.800 |     0.147 |       0.000 |      0.147 |       NA    | Unspecified | NA         |
@@ -88,7 +88,7 @@ Table of Contents
 | Vcco12           |       1.200 |     0.000 |       0.000 |      0.000 |       NA    | Unspecified | NA         |
 | Vcco10           |       1.000 |     0.000 |       0.000 |      0.000 |       NA    | Unspecified | NA         |
 | Vccadc           |       1.800 |     0.008 |       0.000 |      0.008 |       NA    | Unspecified | NA         |
-| VCC_PSINTFP      |       0.850 |     1.054 |       1.019 |      0.034 |       NA    | Unspecified | NA         |
+| VCC_PSINTFP      |       0.850 |     1.057 |       1.022 |      0.035 |       NA    | Unspecified | NA         |
 | VCC_PSINTLP      |       0.850 |     0.249 |       0.242 |      0.007 |       NA    | Unspecified | NA         |
 | VPS_MGTRAVCC     |       0.850 |     0.139 |       0.138 |      0.001 |       NA    | Unspecified | NA         |
 | VCC_PSINTFP_DDR  |       0.850 |     0.719 |       0.714 |      0.004 |       NA    | Unspecified | NA         |
@@ -150,7 +150,7 @@ Table of Contents
 +----------+------------------------------------------------------+-----------------+
 | Clock    | Domain                                               | Constraint (ns) |
 +----------+------------------------------------------------------+-----------------+
-| clk_pl_0 | system_i/zynq_ultra_ps_e_0/inst/pl_clk_unbuffered[0] |             5.3 |
+| clk_pl_0 | system_i/zynq_ultra_ps_e_0/inst/pl_clk_unbuffered[0] |             4.0 |
 +----------+------------------------------------------------------+-----------------+
 
 
@@ -163,14 +163,14 @@ Table of Contents
 +-----------------------+-----------+
 | Name                  | Power (W) |
 +-----------------------+-----------+
-| system_wrapper        |     2.678 |
-|   system_i            |     2.678 |
-|     axi_smc           |     0.024 |
-|       inst            |     0.024 |
-|     my_neural_net_0   |     0.006 |
-|       inst            |     0.006 |
-|     zynq_ultra_ps_e_0 |     2.648 |
-|       inst            |     2.648 |
+| system_wrapper        |     2.701 |
+|   system_i            |     2.701 |
+|     axi_smc           |     0.039 |
+|       inst            |     0.039 |
+|     my_neural_net_0   |     0.008 |
+|       inst            |     0.008 |
+|     zynq_ultra_ps_e_0 |     2.654 |
+|       inst            |     2.654 |
 +-----------------------+-----------+
 
 

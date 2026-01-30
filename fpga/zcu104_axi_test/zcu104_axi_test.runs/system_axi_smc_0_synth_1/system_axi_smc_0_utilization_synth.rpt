@@ -1,7 +1,7 @@
 Copyright 1986-2022 Xilinx, Inc. All Rights Reserved. Copyright 2022-2025 Advanced Micro Devices, Inc. All Rights Reserved.
 ---------------------------------------------------------------------------------------------------------------------------------------------
 | Tool Version : Vivado v.2025.2 (win64) Build 6299465 Fri Nov 14 19:35:11 GMT 2025
-| Date         : Fri Jan 30 16:06:43 2026
+| Date         : Fri Jan 30 18:19:11 2026
 | Host         : LAPTOP-H7062M33 running 64-bit major release  (build 9200)
 | Command      : report_utilization -file system_axi_smc_0_utilization_synth.rpt -pb system_axi_smc_0_utilization_synth.pb
 | Design       : system_axi_smc_0
@@ -32,8 +32,8 @@ Table of Contents
 +----------------------------+------+-------+------------+-----------+-------+
 |          Site Type         | Used | Fixed | Prohibited | Available | Util% |
 +----------------------------+------+-------+------------+-----------+-------+
-| CLB LUTs*                  |  788 |     0 |          0 |    230400 |  0.34 |
-|   LUT as Logic             |  787 |     0 |          0 |    230400 |  0.34 |
+| CLB LUTs*                  |  790 |     0 |          0 |    230400 |  0.34 |
+|   LUT as Logic             |  789 |     0 |          0 |    230400 |  0.34 |
 |   LUT as Memory            |    1 |     0 |          0 |    101760 | <0.01 |
 |     LUT as Distributed RAM |    0 |     0 |            |           |       |
 |     LUT as Shift Register  |    1 |     0 |            |           |       |
