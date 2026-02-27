@@ -1,0 +1,57 @@
+{
+  "device": {
+    "name": "ZCU104 (XCZU7EV-2FFVC1156)",
+    "dsp_count": 1728,
+    "lut_count": 230400,
+    "ff_count": 460800,
+    "bram_36kb": 312
+  },
+  "modules": {
+    "interpolator1_5_ssr": {
+      "lut": 610,
+      "ff": 1954,
+      "dsp": 60,
+      "bram36": 0,
+      "instances": 1
+    },
+    "fex_layer_synth": {
+      "lut": 650,
+      "ff": 1282,
+      "dsp": 4,
+      "bram36": 0,
+      "instances": 5
+    },
+    "tdnn_generator": {
+      "lut": 1288,
+      "ff": 1572,
+      "dsp": 10,
+      "bram36": 0,
+      "instances": 5
+    },
+    "weight_rom": {
+      "lut": 300,
+      "ff": 180,
+      "dsp": 0,
+      "bram36": 3,
+      "instances": 1
+    }
+  },
+  "total": {
+    "lut": 10900,
+    "ff": 16504,
+    "dsp": 130,
+    "bram36": 3
+  },
+  "utilization_percent": {
+    "lut": 4.730902777777778,
+    "ff": 3.5815972222222223,
+    "dsp": 7.523148148148148,
+    "bram": 0.9615384615384616
+  },
+  "performance": {
+    "clock_mhz": 200,
+    "ssr_factor": 5,
+    "throughput_gsps": 1.0,
+    "latency_cycles": 55
+  }
+}
