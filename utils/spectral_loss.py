@@ -480,9 +480,10 @@ class SpectralLoss(nn.Module):
         n_sub_ch: int = 1,
         nperseg: int = 2560,
         l1_weight: float = 1.0,
-        power_weight: float = 2.0,      # Reduced from acpr_weight
-        nmse_weight: float = 5.0,       # NEW: NMSE loss weight, later add weighted loss for A^3
-        a3_mse_weight: float = 0.0 
+        power_weight: float = 2.0,
+        nmse_weight: float = 5.0,
+        a3_mse_weight: float = 0.0,
+        acpr_weight: float = 0.0      # Differentiable ACPR penalty (enable after warmup)
     ):
         super().__init__()
         
@@ -497,10 +498,11 @@ class SpectralLoss(nn.Module):
         self.nperseg = nperseg
         
         # Loss weights
-        self.l1_weight = l1_weight              # L1 reconstruction: 50.0
-        self.power_weight = power_weight        # Power regularization: 10.0 (reduced)
-        self.nmse_weight = nmse_weight          # NMSE loss: 10.0 (NEW)
-        self.a3_mse_weight = a3_mse_weight      # A³-MSE loss: 0.0 (NEW)
+        self.l1_weight = l1_weight
+        self.power_weight = power_weight
+        self.nmse_weight = nmse_weight
+        self.a3_mse_weight = a3_mse_weight
+        self.acpr_weight = acpr_weight          # ACPR gradient: 0 during warmup, enable later
         self.l1_loss = nn.L1Loss()
         
     # MODIFY SpectralLoss.forward() - ADD NMSE loss computation
@@ -553,12 +555,45 @@ class SpectralLoss(nn.Module):
             a3_mse = torch.tensor(0.0, device=predicted.device)
             losses['a3_mse'] = a3_mse
         
+        # ===== Differentiable ACPR Loss =====
+        # Backprops through torch.fft.fft → time-domain → DPD weights.
+        # Only compute when weight > 0 AND enough samples exist for FFT resolution.
+        # Minimum 64 samples needed for meaningful spectral content.
+        if self.acpr_weight > 0 and predicted.shape[0] >= 64:
+            try:
+                # Flatten to [1, N, 2] treating the entire batch as a contiguous signal
+                if predicted.dim() == 2:
+                    sig = predicted.unsqueeze(0)        # [1, B, 2]
+                elif predicted.dim() == 3:
+                    B, T, C = predicted.shape
+                    sig = predicted.reshape(1, B * T, C)  # [1, B*T, 2]
+                else:
+                    sig = predicted.unsqueeze(0)
+
+                acpr_l, acpr_u = compute_acpr(
+                    sig,
+                    sample_rate=self.sample_rate,
+                    channel_bw=self.channel_bw,
+                    adjacent_offset=self.adjacent_offset,
+                    return_db=False   # Linear ratio → smoother gradients than dB
+                )
+                # Mean across batch dim (usually 1 after the reshape)
+                acpr_loss = (acpr_l.mean() + acpr_u.mean()) / 2.0
+                losses['acpr'] = acpr_loss
+            except Exception:
+                acpr_loss = torch.tensor(0.0, device=predicted.device)
+                losses['acpr'] = acpr_loss
+        else:
+            acpr_loss = torch.tensor(0.0, device=predicted.device)
+            losses['acpr'] = acpr_loss
+
         # ===== Combined Loss =====
         total = (
             self.l1_weight * l1 + 
             self.power_weight * power_loss + 
             self.nmse_weight * nmse_loss +
-            self.a3_mse_weight * a3_mse
+            self.a3_mse_weight * a3_mse +
+            self.acpr_weight * acpr_loss
         )
         
         if return_components:

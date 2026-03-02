@@ -384,6 +384,109 @@ class PNTDNNGenerator(nn.Module):
             weights[name] = p_quant
         
         return weights
+    
+    # ================================================================================
+    # FIX 2: Update PNTDNNGenerator to handle pre-assembled features correctly
+    # ================================================================================
+    # Add this method inside PNTDNNGenerator class in pn_tdnn_generator.py
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        pre_assembled: bool = False
+    ) -> torch.Tensor:
+        """
+        Forward pass through PN-TDNN.
+        
+        Args:
+            x: Input tensor
+            - If pre_assembled=False: [batch, seq_len, 2] raw IQ sequence
+            - If pre_assembled=True: [batch, M+1, 2] pre-assembled memory taps
+                                        OR [batch, 24] pre-extracted features
+            pre_assembled: Whether input contains memory taps or features
+            
+        Returns:
+            output: [batch, 2] DPD output IQ
+        """
+        if pre_assembled:
+            # Check if fully pre-extracted features [B, 24] or memory taps [B, M+1, 2]
+            if x.dim() == 2 and x.shape[-1] == self.input_dim:
+                # Already extracted features [B, 24]
+                features = x
+                # No phase denormalization (used for FPGA simulation)
+                return self._forward_fc(features)
+            elif x.dim() == 3 and x.shape[1] == self.memory_depth + 1:
+                # Memory taps [B, M+1, 2] - extract features here
+                # Convert memory taps to feature sequence format [B, M+1, 2] → [B, 2]
+                features, reference = self._extract_features_from_taps(x)
+                fc_out = self._forward_fc(features)
+                # Phase denormalization
+                output = self.phase_denormalize(fc_out.unsqueeze(1), reference.unsqueeze(1))
+                return output.squeeze(1)
+            else:
+                raise ValueError(f"Unexpected pre_assembled input shape: {x.shape}")
+        else:
+            # Raw IQ sequence [B, seq_len, 2]
+            features, reference = self.feature_extraction(x)
+            batch, seq_out, feat_dim = features.shape
+            features_flat = features.view(batch * seq_out, feat_dim)
+            fc_out_flat = self._forward_fc(features_flat)
+            fc_out = fc_out_flat.view(batch, seq_out, 2)
+            output = self.phase_denormalize(fc_out, reference)
+            return output
+
+    def _extract_features_from_taps(self, taps: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Extract phase-normalized features from pre-assembled memory taps.
+        
+        Args:
+            taps: [batch, M+1, 2] memory taps (oldest to newest, or newest to oldest)
+                Assumes taps[:, -1, :] is the current sample (most recent)
+        
+        Returns:
+            features: [batch, 24] phase-normalized features
+            reference: [batch, 3] (I_0, Q_0, A_0) for phase denormalization
+        """
+        batch = taps.shape[0]
+        device = taps.device
+        eps = 1e-8
+        
+        # Current sample (most recent) for phase normalization reference
+        I_0 = taps[:, -1, 0]  # [batch]
+        Q_0 = taps[:, -1, 1]  # [batch]
+        A_0 = torch.sqrt(I_0**2 + Q_0**2 + eps)  # [batch]
+        
+        reference = torch.stack([I_0, Q_0, A_0], dim=-1)  # [batch, 3]
+        
+        feature_list = []
+        
+        # Process each memory tap (k=0 is most recent, k=M is oldest)
+        for k in range(self.memory_depth + 1):
+            # Map k to tap index: k=0 → taps[:, -1], k=1 → taps[:, -2], etc.
+            tap_idx = -(k + 1)  # -1, -2, -3, -4 for M=3
+            
+            I_k = taps[:, tap_idx, 0]  # [batch]
+            Q_k = taps[:, tap_idx, 1]  # [batch]
+            A_k = torch.sqrt(I_k**2 + Q_k**2 + eps)  # [batch]
+            A3_k = A_k ** 3
+            
+            # Phase-normalized IQ
+            I_norm = (I_k * I_0 + Q_k * Q_0) / (A_0 + eps)
+            Q_norm = (Q_k * I_0 - I_k * Q_0) / (A_0 + eps)
+            
+            # Features: A, A³, I_norm, Q_norm, I, Q
+            feature_list.extend([
+                A_k.unsqueeze(-1),
+                A3_k.unsqueeze(-1),
+                I_norm.unsqueeze(-1),
+                Q_norm.unsqueeze(-1),
+                I_k.unsqueeze(-1),
+                Q_k.unsqueeze(-1),
+            ])
+        
+        features = torch.cat(feature_list, dim=-1)  # [batch, 24]
+        
+        return features, reference
 
 
 class Discriminator(nn.Module):
